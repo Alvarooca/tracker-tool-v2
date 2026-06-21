@@ -34,6 +34,7 @@ html, body { margin: 0; padding: 0; }
 .header-total { text-align: right; display: flex; flex-direction: column; }
 .header-total-label { font-size: 11px; color: #7A8290; margin-bottom: 2px; }
 .header-total-value { font-family: 'IBM Plex Mono', monospace; font-size: 20px; font-weight: 600; }
+.header-total-change { display: block; font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; margin-top: 2px; }
 
 .install-pill { background: transparent; border: 1px solid #E8B339; color: #E8B339; font-family: 'Inter', sans-serif; font-size: 11px; font-weight: 600; padding: 7px 11px; border-radius: 20px; display: inline-flex; align-items: center; gap: 5px; cursor: pointer; white-space: nowrap; }
 .install-pill[hidden] { display: none; }
@@ -300,21 +301,23 @@ function resetHojeState() {
   };
 }
 function loadQuotesCache() {
-  let apiKey = "", quotes = {}, fxRateInput = "", quotesUpdatedAt = null;
+  let apiKey = "", finnhubKey = "", quotes = {}, fxRateInput = "", quotesUpdatedAt = null;
   try { apiKey = localStorage.getItem("pnl-twelvedata-key") || ""; } catch (_) {}
+  try { finnhubKey = localStorage.getItem("pnl-finnhub-key") || ""; } catch (_) {}
   try { quotes = JSON.parse(localStorage.getItem("pnl-quotes") || "{}"); } catch (_) {}
   try {
     const fx = JSON.parse(localStorage.getItem("pnl-fx") || "null");
     fxRateInput = typeof fx === "number" ? String(fx) : "";
   } catch (_) {}
   try { quotesUpdatedAt = localStorage.getItem("pnl-quotes-updated-at") || null; } catch (_) {}
-  return { apiKey, quotes, fxRateInput, quotesUpdatedAt };
+  return { apiKey, finnhubKey, quotes, fxRateInput, quotesUpdatedAt };
 }
 
 function persistQuotesCache() {
   const p = state.posicoes;
   try {
     localStorage.setItem("pnl-twelvedata-key", p.apiKey || "");
+    localStorage.setItem("pnl-finnhub-key", p.finnhubKey || "");
     localStorage.setItem("pnl-quotes", JSON.stringify(p.quotes || {}));
     localStorage.setItem("pnl-fx", JSON.stringify(parseNum(p.fxRateInput) || null));
     if (p.quotesUpdatedAt) localStorage.setItem("pnl-quotes-updated-at", p.quotesUpdatedAt);
@@ -327,6 +330,7 @@ function resetPosicoesState() {
     rows: state.portfolio.map((p) => ({ ...p, price: typeof p.price === "number" || typeof p.price === "string" ? p.price : (cache.quotes[p.ticker] ?? "") })),
     dirty: false,
     apiKey: cache.apiKey,
+    finnhubKey: cache.finnhubKey,
     quotes: cache.quotes,
     fxRateInput: cache.fxRateInput,
     quotesUpdatedAt: cache.quotesUpdatedAt,
@@ -357,82 +361,59 @@ function timeAgoLabel(iso) {
 
 async function fetchQuotes() {
   const p = state.posicoes;
-  const apiKey = (p.apiKey || "").trim();
-  if (!apiKey) {
-    p.quotesError = ["Ingresa tu clave de API de Twelve Data para buscar cotizaciones (es gratis)."];
+  const finnhubKey = (p.finnhubKey || "").trim();
+  const twelveKey = (p.apiKey || "").trim();
+  if (!finnhubKey && !twelveKey) {
+    p.quotesError = ["Ingresa al menos tu clave de Finnhub (para precios) o de Twelve Data (para el cambio)."];
     render();
     return;
   }
   p.quotesStatus = "loading";
   p.quotesError = null;
+  p.quotesProgressLabel = "Buscando…";
   render();
 
   const tickers = [...new Set(state.portfolio.map((r) => r.ticker).filter(Boolean))];
   const errors = [];
+  const newQuotes = { ...p.quotes };
 
-  // 1) USD/BRL — tries Frankfurter first (ECB data), falls back to ExchangeRate-API's
-  // open endpoint if the first one is unreachable (e.g. blocked by a network/carrier).
-  // Neither touches Twelve Data's quota.
+  // 1) USD/BRL via Twelve Data — just 1 symbol, far under its 8-credits/min free limit.
   const fxPromise = (async () => {
+    if (!twelveKey) { errors.push("Sin clave de Twelve Data: el cambio no se actualizó."); return; }
     try {
-      const r = await fetch("https://api.frankfurter.app/latest?from=USD&to=BRL");
-      const data = await r.json();
-      const rate = data?.rates?.BRL;
-      if (typeof rate === "number") { p.fxRateInput = String(rate); return; }
-      throw new Error("sem dado");
-    } catch (_) {
-      try {
-        const r2 = await fetch("https://open.er-api.com/v6/latest/USD");
-        const data2 = await r2.json();
-        const rate2 = data2?.rates?.BRL;
-        if (typeof rate2 === "number") { p.fxRateInput = String(rate2); return; }
-        throw new Error("sem dado 2");
-      } catch (_2) {
-        errors.push("No pude obtener el cambio USD/BRL automáticamente. Ingrésalo manualmente.");
-      }
+      const url = `https://api.twelvedata.com/price?symbol=USD/BRL&apikey=${encodeURIComponent(twelveKey)}`;
+      const resp = await fetch(url);
+      const data = await resp.json();
+      if (data && data.status === "error") { errors.push(data.message || "Error al buscar el cambio en Twelve Data."); return; }
+      const num = parseFloat(data?.price);
+      if (Number.isFinite(num)) p.fxRateInput = String(num);
+      else errors.push("Sin cotización para USD/BRL.");
+    } catch (err) {
+      errors.push("No pude buscar el cambio en Twelve Data (sin conexión).");
     }
   })();
 
-  // 2) Stock prices via Twelve Data — batched in groups of 8 symbols to respect the
-  // free plan's limit of 8 API credits per minute (each symbol = 1 credit per request).
-  const CHUNK_SIZE = 8;
-  const chunks = [];
-  for (let i = 0; i < tickers.length; i += CHUNK_SIZE) chunks.push(tickers.slice(i, i + CHUNK_SIZE));
-
-  const newQuotes = { ...p.quotes };
-
+  // 2) Stock prices via Finnhub — free plan allows 60 calls/min, so all tickers fetch
+  // concurrently in one go, no batching or waiting needed.
   const quotesPromise = (async () => {
-    for (let i = 0; i < chunks.length; i++) {
-      const chunk = chunks[i];
-      if (i > 0) {
-        p.quotesProgressLabel = `Esperando ~1 min (límite del plan gratis)… grupo ${i + 1}/${chunks.length}`;
-        render();
-        await new Promise((r) => setTimeout(r, 61000)); // stay under the per-minute credit cap
-      }
-      p.quotesProgressLabel = chunks.length > 1 ? `Buscando grupo ${i + 1}/${chunks.length}…` : null;
-      render();
-      try {
-        const url = `https://api.twelvedata.com/price?symbol=${chunk.join(",")}&apikey=${encodeURIComponent(apiKey)}`;
-        const resp = await fetch(url);
-        const data = await resp.json();
-        if (data && data.status === "error") {
-          errors.push(data.message || "Error al buscar precios en Twelve Data.");
-          continue;
-        }
-        const shaped = chunk.length === 1 ? { [chunk[0]]: data } : data;
-        Object.entries(shaped || {}).forEach(([sym, val]) => {
-          if (!val || typeof val !== "object" || val.status === "error" || !val.price) {
+    if (!finnhubKey) { if (tickers.length) errors.push("Sin clave de Finnhub: los precios no se actualizaron."); return; }
+    await Promise.all(
+      tickers.map(async (sym) => {
+        try {
+          const url = `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(sym)}&token=${encodeURIComponent(finnhubKey)}`;
+          const resp = await fetch(url);
+          const data = await resp.json();
+          const price = Number(data?.c);
+          if (!Number.isFinite(price) || (price === 0 && Number(data?.pc) === 0)) {
             errors.push(`Sin cotización para ${sym}.`);
             return;
           }
-          const num = parseFloat(val.price);
-          if (Number.isFinite(num)) newQuotes[sym] = num;
-        });
-      } catch (err) {
-        errors.push("No pude buscar precios en Twelve Data (sin conexión).");
-      }
-    }
-    p.quotesProgressLabel = null;
+          newQuotes[sym] = price;
+        } catch (err) {
+          errors.push(`No pude buscar ${sym} en Finnhub (sin conexión).`);
+        }
+      })
+    );
   })();
 
   await Promise.all([fxPromise, quotesPromise]);
@@ -444,6 +425,7 @@ async function fetchQuotes() {
   persistQuotesCache();
 
   p.quotesStatus = "idle";
+  p.quotesProgressLabel = null;
   render();
 }
 function resetHistoricoState() {
@@ -666,57 +648,62 @@ function startManual() {
 
 async function fetchLiveDayChange() {
   const h = state.hoje;
-  const apiKey = (state.posicoes.apiKey || "").trim();
-  if (!apiKey) {
-    h.error = "Configura tu clave de API de Twelve Data en la pestaña Posiciones primero.";
+  const finnhubKey = (state.posicoes.finnhubKey || "").trim();
+  const twelveKey = (state.posicoes.apiKey || "").trim();
+  if (!finnhubKey && !twelveKey) {
+    h.error = "Configura tu clave de Finnhub (precios) o de Twelve Data (cambio) en la pestaña Posiciones primero.";
     render();
     return;
   }
   h.fetchStatus = "loading";
   h.error = null;
+  h.fetchProgressLabel = "Buscando…";
   render();
 
   const tickers = [...new Set(state.portfolio.map((p) => p.ticker).filter(Boolean))];
-  const symbols = [...tickers, "USD/BRL"];
   const errors = [];
   const pctByTicker = {};
   let fxPct = null;
 
-  const CHUNK_SIZE = 8;
-  const chunks = [];
-  for (let i = 0; i < symbols.length; i += CHUNK_SIZE) chunks.push(symbols.slice(i, i + CHUNK_SIZE));
+  // Stocks via Finnhub — 60 calls/min on the free plan, so every ticker fetches at once.
+  const stocksPromise = (async () => {
+    if (!finnhubKey) { if (tickers.length) errors.push("Sin clave de Finnhub: no se buscó la variación de las acciones."); return; }
+    await Promise.all(
+      tickers.map(async (sym) => {
+        try {
+          const url = `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(sym)}&token=${encodeURIComponent(finnhubKey)}`;
+          const resp = await fetch(url);
+          const data = await resp.json();
+          const pct = Number(data?.dp);
+          if (!Number.isFinite(pct) || (Number(data?.c) === 0 && Number(data?.pc) === 0)) {
+            errors.push(`Sin variación para ${sym}.`);
+            return;
+          }
+          pctByTicker[sym] = pct;
+        } catch (err) {
+          errors.push(`No pude buscar ${sym} en Finnhub (sin conexión).`);
+        }
+      })
+    );
+  })();
 
-  for (let i = 0; i < chunks.length; i++) {
-    const chunk = chunks[i];
-    if (i > 0) {
-      h.fetchProgressLabel = `Esperando ~1 min (límite del plan gratis)… grupo ${i + 1}/${chunks.length}`;
-      render();
-      await new Promise((r) => setTimeout(r, 61000));
-    }
-    h.fetchProgressLabel = chunks.length > 1 ? `Buscando grupo ${i + 1}/${chunks.length}…` : null;
-    render();
+  // USD/BRL via Twelve Data — just 1 symbol, far under its free per-minute limit.
+  const fxPromise = (async () => {
+    if (!twelveKey) { errors.push("Sin clave de Twelve Data: no se buscó la variación del cambio."); return; }
     try {
-      const url = `https://api.twelvedata.com/quote?symbol=${chunk.join(",")}&apikey=${encodeURIComponent(apiKey)}`;
+      const url = `https://api.twelvedata.com/quote?symbol=USD/BRL&apikey=${encodeURIComponent(twelveKey)}`;
       const resp = await fetch(url);
       const data = await resp.json();
-      if (data && data.status === "error") {
-        errors.push(data.message || "Error al buscar la variación en Twelve Data.");
-        continue;
-      }
-      const shaped = chunk.length === 1 ? { [chunk[0]]: data } : data;
-      Object.entries(shaped || {}).forEach(([sym, val]) => {
-        const pct = parseFloat(val?.percent_change);
-        if (!val || val.status === "error" || !Number.isFinite(pct)) {
-          errors.push(`Sin variación para ${sym}.`);
-          return;
-        }
-        if (sym === "USD/BRL") fxPct = pct;
-        else pctByTicker[sym] = pct;
-      });
+      if (data && data.status === "error") { errors.push(data.message || "Error al buscar la variación del cambio en Twelve Data."); return; }
+      const pct = parseFloat(data?.percent_change);
+      if (Number.isFinite(pct)) fxPct = pct;
+      else errors.push("Sin variación para USD/BRL.");
     } catch (err) {
-      errors.push("No pude buscar la variación en Twelve Data (sin conexión).");
+      errors.push("No pude buscar la variación del cambio en Twelve Data (sin conexión).");
     }
-  }
+  })();
+
+  await Promise.all([stocksPromise, fxPromise]);
   h.fetchProgressLabel = null;
 
   const map = {};
@@ -873,11 +860,15 @@ function renderPosicoes() {
         </div>
         <p class="quotes-updated small muted">${p.quotesUpdatedAt ? timeAgoLabel(p.quotesUpdatedAt) : "aún no buscado"}</p>
         <div class="api-key-row">
-          <input class="input-cell input-apikey" data-bind="apiKey" value="${escapeAttr(p.apiKey)}" placeholder="Clave de API de Twelve Data">
+          <input class="input-cell input-apikey" data-bind="finnhubKey" value="${escapeAttr(p.finnhubKey)}" placeholder="Clave de API de Finnhub (precios)">
+          <a class="muted small" href="https://finnhub.io/register" target="_blank" rel="noopener">Crear clave gratis ↗</a>
+        </div>
+        <div class="api-key-row">
+          <input class="input-cell input-apikey" data-bind="apiKey" value="${escapeAttr(p.apiKey)}" placeholder="Clave de API de Twelve Data (cambio)">
           <a class="muted small" href="https://twelvedata.com/pricing" target="_blank" rel="noopener">Crear clave gratis ↗</a>
         </div>
         <p class="upload-hint">El precio (US$) de cada posición se completa automáticamente al actualizar las cotizaciones, pero puedes escribir encima si quieres. Sin precio y cambio, el valor vuelve a ser editable manualmente.</p>
-        <p class="upload-hint">El plan gratuito de Twelve Data permite 8 acciones por minuto. Con más de 8 tickers distintos, la búsqueda continúa automáticamente después de esperar 1 minuto entre grupos.</p>
+        <p class="upload-hint">Los precios de las acciones vienen de Finnhub (60 consultas/min gratis) y el cambio USD/BRL de Twelve Data (8/min, pero acá solo se pide ese único símbolo).</p>
       </div>
 
       <div class="card">
@@ -1016,60 +1007,73 @@ function addDemo() {
 
 async function importRealHistory() {
   const h = state.historico;
-  const apiKey = (state.posicoes.apiKey || "").trim();
-  if (!apiKey) {
-    h.importError = ["Configura tu clave de API de Twelve Data en la pestaña Posiciones primero."];
+  const finnhubKey = (state.posicoes.finnhubKey || "").trim();
+  const twelveKey = (state.posicoes.apiKey || "").trim();
+  if (!finnhubKey && !twelveKey) {
+    h.importError = ["Configura tu clave de Finnhub (precios) o de Twelve Data (cambio) en la pestaña Posiciones primero."];
     render();
     return;
   }
   h.importStatus = "loading";
   h.importError = null;
   h.importMessage = null;
+  h.importProgressLabel = "Buscando histórico…";
   render();
 
   const tickers = [...new Set(state.portfolio.map((p) => p.ticker).filter(Boolean))];
-  const symbols = [...tickers, "USD/BRL"];
   const errors = [];
   const tickerCloses = {}; // ticker -> { 'YYYY-MM-DD': closePrice }
   const fxRates = {}; // 'YYYY-MM-DD' -> rate
 
-  const CHUNK_SIZE = 8;
-  const chunks = [];
-  for (let i = 0; i < symbols.length; i += CHUNK_SIZE) chunks.push(symbols.slice(i, i + CHUNK_SIZE));
+  // Stock closes via Finnhub — 60 calls/min on the free plan, all tickers fetch at once.
+  const stocksPromise = (async () => {
+    if (!finnhubKey) { if (tickers.length) errors.push("Sin clave de Finnhub: no se importó histórico de las acciones."); return; }
+    const toUnix = Math.floor(Date.now() / 1000);
+    const fromUnix = toUnix - 18 * 86400;
+    await Promise.all(
+      tickers.map(async (sym) => {
+        try {
+          const url = `https://finnhub.io/api/v1/stock/candle?symbol=${encodeURIComponent(sym)}&resolution=D&from=${fromUnix}&to=${toUnix}&token=${encodeURIComponent(finnhubKey)}`;
+          const resp = await fetch(url);
+          const data = await resp.json();
+          if (data?.s !== "ok" || !Array.isArray(data.c) || !Array.isArray(data.t)) {
+            errors.push(`Sin histórico para ${sym}.`);
+            return;
+          }
+          const map = {};
+          data.t.forEach((ts, i) => {
+            const d = new Date(ts * 1000).toISOString().slice(0, 10);
+            const close = Number(data.c[i]);
+            if (Number.isFinite(close)) map[d] = close;
+          });
+          tickerCloses[sym] = map;
+        } catch (err) {
+          errors.push(`No pude buscar ${sym} en Finnhub (sin conexión).`);
+        }
+      })
+    );
+  })();
 
-  for (let i = 0; i < chunks.length; i++) {
-    const chunk = chunks[i];
-    if (i > 0) {
-      h.importProgressLabel = `Esperando ~1 min (límite del plan gratis)… grupo ${i + 1}/${chunks.length}`;
-      render();
-      await new Promise((r) => setTimeout(r, 61000));
-    }
-    h.importProgressLabel = chunks.length > 1 ? `Buscando histórico — grupo ${i + 1}/${chunks.length}…` : "Buscando histórico…";
-    render();
+  // USD/BRL history via Twelve Data — just 1 symbol, far under its free per-minute limit.
+  const fxPromise = (async () => {
+    if (!twelveKey) { errors.push("Sin clave de Twelve Data: no se importó histórico del cambio."); return; }
     try {
-      const url = `https://api.twelvedata.com/time_series?symbol=${chunk.join(",")}&interval=1day&outputsize=15&apikey=${encodeURIComponent(apiKey)}`;
+      const url = `https://api.twelvedata.com/time_series?symbol=USD/BRL&interval=1day&outputsize=15&apikey=${encodeURIComponent(twelveKey)}`;
       const resp = await fetch(url);
       const data = await resp.json();
-      if (data && data.status === "error") {
-        errors.push(data.message || "Error al buscar histórico en Twelve Data.");
-        continue;
-      }
-      const shaped = chunk.length === 1 ? { [chunk[0]]: data } : data;
-      Object.entries(shaped || {}).forEach(([sym, val]) => {
-        if (!val || !Array.isArray(val.values)) { errors.push(`Sin histórico para ${sym}.`); return; }
-        const map = {};
-        val.values.forEach((v) => {
-          const d = String(v.datetime).slice(0, 10);
-          const close = parseFloat(v.close);
-          if (Number.isFinite(close)) map[d] = close;
-        });
-        if (sym === "USD/BRL") Object.assign(fxRates, map);
-        else tickerCloses[sym] = map;
+      if (data && data.status === "error") { errors.push(data.message || "Error al buscar histórico del cambio en Twelve Data."); return; }
+      if (!Array.isArray(data?.values)) { errors.push("Sin histórico para USD/BRL."); return; }
+      data.values.forEach((v) => {
+        const d = String(v.datetime).slice(0, 10);
+        const close = parseFloat(v.close);
+        if (Number.isFinite(close)) fxRates[d] = close;
       });
     } catch (err) {
-      errors.push("No pude buscar histórico en Twelve Data (sin conexión).");
+      errors.push("No pude buscar histórico del cambio en Twelve Data (sin conexión).");
     }
-  }
+  })();
+
+  await Promise.all([stocksPromise, fxPromise]);
   h.importProgressLabel = null;
 
   // Day-over-day % change, computed within each series' own trading calendar.
@@ -1162,6 +1166,10 @@ function render() {
   const root = document.getElementById("app");
   const totalSaldo = state.portfolio.reduce((s, p) => s + (parseNum(p.saldo) || 0), 0);
   const lastEntry = state.history.length ? state.history[state.history.length - 1] : null;
+  const isTodayEntry = lastEntry && new Date(lastEntry.date).toDateString() === new Date().toDateString();
+  const dayChangeHtml = isTodayEntry
+    ? `<span class="header-total-change ${lastEntry.total >= 0 ? "up" : "down"}">${lastEntry.total >= 0 ? "+" : ""}${fmtBRL(lastEntry.total)} (${fmtPct(totalSaldo ? (lastEntry.total / totalSaldo) * 100 : 0)})</span>`
+    : "";
 
   root.innerHTML = `
     <div class="app">
@@ -1176,6 +1184,7 @@ function render() {
             <div class="header-total">
               <span class="header-total-label">Saldo total</span>
               <span class="header-total-value">${fmtBRL(totalSaldo)}</span>
+              ${dayChangeHtml}
             </div>
           </div>
         </div>
@@ -1254,6 +1263,9 @@ root.addEventListener("input", (e) => {
     }
   } else if (bind === "apiKey") {
     state.posicoes.apiKey = el.value;
+    persistQuotesCache();
+  } else if (bind === "finnhubKey") {
+    state.posicoes.finnhubKey = el.value;
     persistQuotesCache();
   } else if (bind === "fxRate") {
     state.posicoes.fxRateInput = el.value;
