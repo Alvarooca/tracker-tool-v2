@@ -178,6 +178,11 @@ const fmtFullDate = (iso) => {
 
 const uid = () => `row-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
 
+const isWeekend = () => {
+  const day = new Date().getDay();
+  return day === 0 || day === 6;
+};
+
 const escapeHtml = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const escapeAttr = (s) => escapeHtml(s).replace(/"/g, "&quot;");
 
@@ -422,6 +427,7 @@ async function fetchQuotes() {
   p.quotesUpdatedAt = new Date().toISOString();
   p.quotesError = errors.length ? errors : null;
   p.rows = p.rows.map((r) => ({ ...r, price: typeof newQuotes[r.ticker] === "number" ? newQuotes[r.ticker] : r.price }));
+  p.dirty = true;
   persistQuotesCache();
 
   p.quotesStatus = "idle";
@@ -534,12 +540,13 @@ function renderHoje() {
     inner = `
       <div class="card upload-card">
         ${h.error ? `<div class="banner banner-warn">${icon("alert-triangle", 15)} ${escapeHtml(h.error)}</div>` : ""}
+        ${isWeekend() ? `<div class="banner banner-warn">${icon("alert-triangle", 15)} Hoy es fin de semana: el mercado está cerrado. La búsqueda automática traería el último cierre (viernes), no el de hoy.</div>` : ""}
         ${icon("camera", 28, "muted")}
         <p class="upload-text">Registra la variación de hoy buscando las cotizaciones automáticamente, pegando los números que ya tienes, o llenando manualmente.</p>
         <button class="btn btn-primary" data-action="fetch-live-day-change" ${h.fetchStatus === "loading" ? "disabled" : ""}>
           ${icon("refresh", 15, h.fetchStatus === "loading" ? "spin" : "")} ${fetchLabel}
         </button>
-        <p class="upload-hint">Usa la misma clave de API de Twelve Data configurada en la pestaña Posiciones.</p>
+        <p class="upload-hint">Usa las claves de Finnhub (acciones) y Twelve Data (cambio) configuradas en la pestaña Posiciones.</p>
         <div class="divider-text">o</div>
         <textarea class="paste-area" data-bind="paste" placeholder="Pega aquí: PG:0.86 KO:0.11 WMB:0.64 USB:2.27 TM:0 ARCC:1.00 ARKB:0 USDBRL:-0.73">${escapeHtml(h.pasteText)}</textarea>
         <button class="btn btn-primary" data-action="parse-pasted" ${h.pasteText.trim() ? "" : "disabled"}>Procesar datos pegados</button>
@@ -706,6 +713,10 @@ async function fetchLiveDayChange() {
   await Promise.all([stocksPromise, fxPromise]);
   h.fetchProgressLabel = null;
 
+  if (isWeekend()) {
+    errors.unshift("Hoy es fin de semana: el mercado de EE. UU. está cerrado. Estos valores son del último cierre (probablemente viernes), no de hoy. (No detecto feriados.)");
+  }
+
   const map = {};
   state.portfolio.forEach((p) => {
     const v = pctByTicker[p.ticker];
@@ -811,6 +822,8 @@ function updateLiveTotal() {
   const liveTotal = state.posicoes.rows.reduce((s, r) => s + rowEffectiveValue(r), 0);
   const span = document.getElementById("live-total");
   if (span) span.textContent = fmtBRL(liveTotal);
+  const headerSpan = document.getElementById("header-total-value");
+  if (headerSpan) headerSpan.textContent = fmtBRL(liveTotal);
 }
 
 function renderPosicoes() {
@@ -1037,30 +1050,46 @@ async function importRealHistory() {
       render();
       await new Promise((r) => setTimeout(r, 61000));
     }
-    h.importProgressLabel = chunks.length > 1 ? `Buscando histórico — grupo ${i + 1}/${chunks.length}…` : "Buscando histórico…";
-    render();
-    try {
-      const url = `https://api.twelvedata.com/time_series?symbol=${chunk.join(",")}&interval=1day&outputsize=15&apikey=${encodeURIComponent(twelveKey)}`;
-      const resp = await fetch(url);
-      const data = await resp.json();
-      if (data && data.status === "error") {
-        errors.push(data.message || "Error al buscar histórico en Twelve Data.");
-        continue;
-      }
-      const shaped = chunk.length === 1 ? { [chunk[0]]: data } : data;
-      Object.entries(shaped || {}).forEach(([sym, val]) => {
-        if (!val || !Array.isArray(val.values)) { errors.push(`Sin histórico para ${sym}.`); return; }
-        const map = {};
-        val.values.forEach((v) => {
-          const d = String(v.datetime).slice(0, 10);
-          const close = parseFloat(v.close);
-          if (Number.isFinite(close)) map[d] = close;
+
+    let attempts = 0;
+    let done = false;
+    while (!done) {
+      attempts++;
+      h.importProgressLabel = chunks.length > 1 ? `Buscando histórico — grupo ${i + 1}/${chunks.length}…` : "Buscando histórico…";
+      render();
+      try {
+        const url = `https://api.twelvedata.com/time_series?symbol=${chunk.join(",")}&interval=1day&outputsize=15&apikey=${encodeURIComponent(twelveKey)}`;
+        const resp = await fetch(url);
+        const data = await resp.json();
+        if (data && data.status === "error") {
+          if (data.code === 429 && attempts < 2) {
+            // hit the per-minute limit (likely shared with another recent fetch) — wait and retry this same group once.
+            h.importProgressLabel = `Límite del minuto alcanzado, reintentando grupo ${i + 1}/${chunks.length} en ~1 min…`;
+            render();
+            await new Promise((r) => setTimeout(r, 61000));
+            continue;
+          }
+          errors.push(data.message || "Error al buscar histórico en Twelve Data.");
+          done = true;
+          continue;
+        }
+        const shaped = chunk.length === 1 ? { [chunk[0]]: data } : data;
+        Object.entries(shaped || {}).forEach(([sym, val]) => {
+          if (!val || !Array.isArray(val.values)) { errors.push(`Sin histórico para ${sym}.`); return; }
+          const map = {};
+          val.values.forEach((v) => {
+            const d = String(v.datetime).slice(0, 10);
+            const close = parseFloat(v.close);
+            if (Number.isFinite(close)) map[d] = close;
+          });
+          if (sym === "USD/BRL") Object.assign(fxRates, map);
+          else tickerCloses[sym] = map;
         });
-        if (sym === "USD/BRL") Object.assign(fxRates, map);
-        else tickerCloses[sym] = map;
-      });
-    } catch (err) {
-      errors.push("No pude buscar histórico en Twelve Data (sin conexión).");
+        done = true;
+      } catch (err) {
+        errors.push("No pude buscar histórico en Twelve Data (sin conexión).");
+        done = true;
+      }
     }
   }
   h.importProgressLabel = null;
@@ -1153,7 +1182,10 @@ function switchTab(tab) {
 
 function render() {
   const root = document.getElementById("app");
-  const totalSaldo = state.portfolio.reduce((s, p) => s + (parseNum(p.saldo) || 0), 0);
+  const totalSaldo =
+    state.tab === "posicoes" && state.posicoes
+      ? state.posicoes.rows.reduce((s, r) => s + rowEffectiveValue(r), 0)
+      : state.portfolio.reduce((s, p) => s + (parseNum(p.saldo) || 0), 0);
   const lastEntry = state.history.length ? state.history[state.history.length - 1] : null;
   const isTodayEntry = lastEntry && new Date(lastEntry.date).toDateString() === new Date().toDateString();
   const dayChangeHtml = isTodayEntry
@@ -1172,7 +1204,7 @@ function render() {
             <button class="install-pill" id="install-btn" data-action="install-app" hidden>${icon("download", 13)} Instalar app</button>
             <div class="header-total">
               <span class="header-total-label">Saldo total</span>
-              <span class="header-total-value">${fmtBRL(totalSaldo)}</span>
+              <span class="header-total-value" id="header-total-value">${fmtBRL(totalSaldo)}</span>
               ${dayChangeHtml}
             </div>
           </div>
