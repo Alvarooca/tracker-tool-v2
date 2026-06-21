@@ -15,67 +15,115 @@
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
 
+:root {
+  --bg-app: #0A0D10;
+  --bg-header-grad: #0F1318;
+  --bg-card: #12161B;
+  --bg-input: #0D1115;
+  --bg-row-alt: #161A20;
+  --border: #1C2128;
+  --border-input: #232932;
+  --text-primary: #ECEFF2;
+  --text-secondary: #C7CCD3;
+  --text-muted: #7A8290;
+  --text-muted2: #ABB2BC;
+  --text-dim: #4A5360;
+  --accent-gold: #E8B339;
+  --up: #1FD8A4;
+  --down: #FF6B6B;
+  --on-accent: #15130A;
+}
+
+[data-theme="light"] {
+  --bg-app: #F7F8FA;
+  --bg-header-grad: #FFFFFF;
+  --bg-card: #FFFFFF;
+  --bg-input: #F0F1F3;
+  --bg-row-alt: #EEF0F3;
+  --border: #E2E5E9;
+  --border-input: #D5D9DE;
+  --text-primary: #14181D;
+  --text-secondary: #3A4250;
+  --text-muted: #6B7280;
+  --text-muted2: #4B5563;
+  --text-dim: #9AA1AC;
+  --accent-gold: #9A6B00;
+  --up: #0F9D78;
+  --down: #D92D2D;
+  --on-accent: #FFFFFF;
+}
+
+
+
 * { box-sizing: border-box; }
-html, body { margin: 0; padding: 0; background: #0A0D10; }
+html, body { margin: 0; padding: 0; background: var(--bg-app); }
 
 .app {
-  background: #0A0D10;
-  color: #ECEFF2;
+  background: var(--bg-app);
+  color: var(--text-primary);
   font-family: 'Inter', sans-serif;
   min-height: 100vh;
   padding-bottom: 32px;
 }
 
-.header { border-bottom: 1px solid #1C2128; background: linear-gradient(180deg, #0F1318 0%, #0A0D10 100%); }
+.header { border-bottom: 1px solid var(--border); background: linear-gradient(180deg, var(--bg-header-grad) 0%, var(--bg-app) 100%); }
 .header-top { display: flex; justify-content: space-between; align-items: flex-end; padding: 20px 18px 14px; gap: 12px; flex-wrap: wrap; }
-.brand-eyebrow { font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.12em; color: #E8B339; margin-bottom: 4px; }
+.brand-eyebrow { font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.12em; color: var(--accent-gold); margin-bottom: 4px; }
 .brand-title { font-family: 'Space Grotesk', sans-serif; font-size: 24px; font-weight: 700; margin: 0; letter-spacing: -0.01em; }
 .header-right { display: flex; align-items: center; gap: 12px; }
 .header-total { text-align: right; display: flex; flex-direction: column; }
-.header-total-label { font-size: 11px; color: #7A8290; margin-bottom: 2px; }
+.header-total-label { font-size: 11px; color: var(--text-muted); margin-bottom: 2px; }
 .header-total-value { font-family: 'IBM Plex Mono', monospace; font-size: 20px; font-weight: 600; }
 .header-total-change { display: block; font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; margin-top: 2px; }
 
-.install-pill { background: transparent; border: 1px solid #E8B339; color: #E8B339; font-family: 'Inter', sans-serif; font-size: 11px; font-weight: 600; padding: 7px 11px; border-radius: 20px; display: inline-flex; align-items: center; gap: 5px; cursor: pointer; white-space: nowrap; }
+.install-pill { background: transparent; border: 1px solid var(--accent-gold); color: var(--accent-gold); font-family: 'Inter', sans-serif; font-size: 11px; font-weight: 600; padding: 7px 11px; border-radius: 20px; display: inline-flex; align-items: center; gap: 5px; cursor: pointer; white-space: nowrap; }
 .install-pill[hidden] { display: none; }
 
-.tape { overflow: hidden; border-top: 1px solid #1C2128; background: #0D1115; padding: 9px 0; }
+.theme-toggle { background: transparent; border: 1px solid var(--border-input); color: var(--text-secondary); border-radius: 20px; padding: 7px; display: inline-flex; align-items: center; cursor: pointer; }
+.theme-icon-dark { display: none; }
+[data-theme="light"] .theme-icon-light { display: none; }
+[data-theme="light"] .theme-icon-dark { display: inline-block; }
+
+.header-total-toprow { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+.currency-toggle { background: transparent; border: 1px solid var(--border-input); color: var(--text-muted); font-size: 10px; padding: 2px 7px; border-radius: 10px; cursor: pointer; font-family: 'IBM Plex Mono', monospace; }
+
+.tape { overflow: hidden; border-top: 1px solid var(--border); background: var(--bg-input); padding: 9px 0; }
 .tape-track { display: flex; gap: 28px; white-space: nowrap; animation: scroll-tape 30s linear infinite; padding-left: 18px; width: max-content; }
 @media (prefers-reduced-motion: reduce) { .tape-track { animation: none; } }
 @keyframes scroll-tape { from { transform: translateX(0); } to { transform: translateX(-50%); } }
-.tape-item { font-family: 'IBM Plex Mono', monospace; font-size: 12px; display: inline-flex; gap: 7px; align-items: center; color: #C7CCD3; }
-.tape-item b { color: #ECEFF2; font-weight: 600; }
+.tape-item { font-family: 'IBM Plex Mono', monospace; font-size: 12px; display: inline-flex; gap: 7px; align-items: center; color: var(--text-secondary); }
+.tape-item b { color: var(--text-primary); font-weight: 600; }
 
 .tabbar { display: flex; gap: 4px; padding: 10px 14px 0; }
-.tab { flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; background: transparent; border: none; color: #7A8290; font-family: 'Inter', sans-serif; font-size: 13px; font-weight: 500; padding: 10px 8px; border-radius: 8px 8px 0 0; cursor: pointer; border-bottom: 2px solid transparent; }
-.tab-active { color: #ECEFF2; border-bottom: 2px solid #E8B339; background: #12161B; }
+.tab { flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; background: transparent; border: none; color: var(--text-muted); font-family: 'Inter', sans-serif; font-size: 13px; font-weight: 500; padding: 10px 8px; border-radius: 8px 8px 0 0; cursor: pointer; border-bottom: 2px solid transparent; }
+.tab-active { color: var(--text-primary); border-bottom: 2px solid var(--accent-gold); background: var(--bg-card); }
 
 .main { padding: 16px 14px 0; max-width: 720px; margin: 0 auto; }
 .stack { display: flex; flex-direction: column; gap: 14px; }
 
-.card { background: #12161B; border: 1px solid #1C2128; border-radius: 12px; padding: 16px; }
+.card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
 .card-title-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
 .card-title { font-family: 'Space Grotesk', sans-serif; font-size: 15px; font-weight: 600; margin: 0; }
 
 .upload-card, .center-card { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 10px; padding: 30px 16px; }
-.upload-text { color: #ABB2BC; font-size: 13px; max-width: 340px; line-height: 1.5; }
-.upload-hint { color: #4A5360; font-size: 11px; max-width: 300px; line-height: 1.4; margin-top: -4px; }
-.paste-area { width: 100%; max-width: 360px; min-height: 70px; background: #0D1115; border: 1px solid #232932; color: #ECEFF2; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; padding: 10px; border-radius: 8px; resize: vertical; }
-.paste-area:focus { outline: none; border-color: #E8B339; }
-.divider-text { color: #4A5360; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; margin: 4px 0; }
+.upload-text { color: var(--text-muted2); font-size: 13px; max-width: 340px; line-height: 1.5; }
+.upload-hint { color: var(--text-dim); font-size: 11px; max-width: 300px; line-height: 1.4; margin-top: -4px; }
+.paste-area { width: 100%; max-width: 360px; min-height: 70px; background: var(--bg-input); border: 1px solid var(--border-input); color: var(--text-primary); font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; padding: 10px; border-radius: 8px; resize: vertical; }
+.paste-area:focus { outline: none; border-color: var(--accent-gold); }
+.divider-text { color: var(--text-dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; margin: 4px 0; }
 
 .btn { font-family: 'Inter', sans-serif; font-size: 13px; font-weight: 600; border-radius: 8px; padding: 10px 16px; display: inline-flex; align-items: center; gap: 7px; cursor: pointer; border: 1px solid transparent; background: none; }
-.btn-primary { background: #E8B339; color: #15130A; }
+.btn-primary { background: var(--accent-gold); color: var(--on-accent); }
 .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
-.btn-ghost { background: transparent; color: #C7CCD3; border: 1px solid #232932; }
+.btn-ghost { background: transparent; color: var(--text-secondary); border: 1px solid var(--border-input); }
 .btn-ghost:disabled { opacity: 0.4; cursor: not-allowed; }
-.icon-btn { background: transparent; border: none; color: #7A8290; cursor: pointer; padding: 4px; display: inline-flex; }
-.icon-btn:hover { color: #FF6B6B; }
+.icon-btn { background: transparent; border: none; color: var(--text-muted); cursor: pointer; padding: 4px; display: inline-flex; }
+.icon-btn:hover { color: var(--down); }
 .move-cell { display: flex; flex-direction: column; gap: 2px; }
 .move-btn { padding: 2px; }
-.move-btn:hover { color: #E8B339; }
+.move-btn:hover { color: var(--accent-gold); }
 .move-btn:disabled { opacity: 0.25; cursor: default; }
-.move-btn:disabled:hover { color: #7A8290; }
+.move-btn:disabled:hover { color: var(--text-muted); }
 
 .row-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
 .toolbar-row { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
@@ -83,53 +131,58 @@ html, body { margin: 0; padding: 0; background: #0A0D10; }
 
 .table { min-width: 100%; border-collapse: collapse; font-size: 13px; }
 .table-scroll { overflow-x: auto; max-width: 100%; }
-.table th { text-align: left; color: #7A8290; font-weight: 500; font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; padding: 6px 6px; border-bottom: 1px solid #1C2128; }
-.table td { padding: 9px 6px; border-bottom: 1px solid #161A20; font-family: 'IBM Plex Mono', monospace; }
+.table th { text-align: left; color: var(--text-muted); font-weight: 500; font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; padding: 6px 6px; border-bottom: 1px solid var(--border); }
+.table td { padding: 9px 6px; border-bottom: 1px solid var(--bg-row-alt); font-family: 'IBM Plex Mono', monospace; }
 .table td:first-child { font-family: 'Inter', sans-serif; }
 .table .num { text-align: right; }
-.row-fx td { background: #0F1318; }
+.row-fx td { background: var(--bg-header-grad); }
 
-.up { color: #1FD8A4; }
-.down { color: #FF6B6B; }
-.muted { color: #7A8290; }
+.up { color: var(--up); }
+.down { color: var(--down); }
+.muted { color: var(--text-muted); }
 .small { font-size: 11.5px; }
 
-.input-cell { width: 100%; background: #0D1115; border: 1px solid #232932; color: #ECEFF2; font-family: 'IBM Plex Mono', monospace; font-size: 13px; padding: 6px 8px; border-radius: 6px; text-align: right; }
-.input-cell:focus { outline: none; border-color: #E8B339; }
+.input-cell { width: 100%; background: var(--bg-input); border: 1px solid var(--border-input); color: var(--text-primary); font-family: 'IBM Plex Mono', monospace; font-size: 13px; padding: 6px 8px; border-radius: 6px; text-align: right; }
+.input-cell:focus { outline: none; border-color: var(--accent-gold); }
 .table-editable td:first-child .input-cell, .table-editable td:nth-child(2) .input-cell { text-align: left; }
 
-.summary { margin-top: 14px; border-top: 1px solid #1C2128; padding-top: 10px; display: flex; flex-direction: column; gap: 7px; }
+.summary { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 10px; display: flex; flex-direction: column; gap: 7px; }
 .summary-line { display: flex; justify-content: space-between; font-size: 13px; font-family: 'IBM Plex Mono', monospace; }
-.summary-total { font-size: 15px; font-weight: 700; border-top: 1px solid #1C2128; padding-top: 8px; margin-top: 2px; font-family: 'Space Grotesk', sans-serif; }
+.summary-total { font-size: 15px; font-weight: 700; border-top: 1px solid var(--border); padding-top: 8px; margin-top: 2px; font-family: 'Space Grotesk', sans-serif; }
 
-.checkbox-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: #ABB2BC; margin-top: 12px; cursor: pointer; }
+.checkbox-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-muted2); margin-top: 12px; cursor: pointer; }
 
 .banner { display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; padding: 10px 12px; border-radius: 8px; margin-bottom: 12px; }
-.banner-warn { background: rgba(232, 179, 57, 0.1); color: #E8B339; border: 1px solid rgba(232, 179, 57, 0.25); }
-.banner-ok { background: rgba(31, 216, 164, 0.1); color: #1FD8A4; border: 1px solid rgba(31, 216, 164, 0.25); }
+.banner-warn { background: rgba(232, 179, 57, 0.1); color: var(--accent-gold); border: 1px solid rgba(232, 179, 57, 0.25); }
+.banner-ok { background: rgba(31, 216, 164, 0.1); color: var(--up); border: 1px solid rgba(31, 216, 164, 0.25); }
 .error-list { margin: 0; padding-left: 18px; }
 .error-list li { margin-bottom: 4px; }
 .error-list li:last-child { margin-bottom: 0; }
 
-.empty-state { text-align: center; color: #7A8290; padding: 30px 16px; }
+.empty-state { text-align: center; color: var(--text-muted); padding: 30px 16px; }
 .total-return-card { display: flex; flex-direction: column; gap: 4px; padding: 14px 16px; }
 .total-return-value { font-family: 'Space Grotesk', sans-serif; font-size: 20px; font-weight: 700; }
 .breakdown-subtitle { margin: 14px 0 8px; }
 .breakdown-subtitle:first-of-type { margin-top: 0; }
 .breakdown-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
 .breakdown-label { width: 64px; flex-shrink: 0; font-size: 12px; font-family: 'IBM Plex Mono', monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.breakdown-bar-track { flex: 1; height: 8px; background: #1C2128; border-radius: 4px; overflow: hidden; }
+.breakdown-bar-track { flex: 1; height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; }
 .breakdown-bar-fill { height: 100%; border-radius: 4px; }
-.breakdown-pct { width: 44px; flex-shrink: 0; text-align: right; font-size: 12px; font-family: 'IBM Plex Mono', monospace; color: #ABB2BC; }
-.tx-form { margin-top: 16px; padding-top: 14px; border-top: 1px solid #1C2128; display: flex; flex-direction: column; gap: 8px; }
+.breakdown-pct { width: 44px; flex-shrink: 0; text-align: right; font-size: 12px; font-family: 'IBM Plex Mono', monospace; color: var(--text-muted2); }
+.tx-form { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
 .tx-select { width: 100%; text-align: left; }
 .tx-form-row { display: flex; gap: 8px; }
 .tx-form-row .input-cell { flex: 1; min-width: 0; }
+.tx-ticker-wrap { position: relative; flex: 1; min-width: 0; }
+.ticker-search-results { position: absolute; top: 100%; left: 0; right: 0; z-index: 20; background: var(--bg-card); border: 1px solid var(--border-input); border-radius: 8px; margin-top: 4px; overflow: hidden; max-height: 220px; overflow-y: auto; }
+.ticker-search-item { display: flex; flex-direction: column; gap: 1px; width: 100%; text-align: left; background: transparent; border: none; border-bottom: 1px solid var(--border); color: var(--text-primary); padding: 8px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; cursor: pointer; }
+.ticker-search-item:last-child { border-bottom: none; }
+.ticker-search-item:hover, .ticker-search-item:active { background: var(--bg-input); }
 
 .icon { display: inline-block; vertical-align: middle; flex-shrink: 0; }
 
 .avatar-img { border-radius: 50%; object-fit: cover; vertical-align: middle; flex-shrink: 0; background: #fff; }
-.avatar-fallback { display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; color: #0A0D10; font-weight: 700; font-family: 'Space Grotesk', sans-serif; vertical-align: middle; flex-shrink: 0; }
+.avatar-fallback { display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; color: var(--bg-app); font-weight: 700; font-family: 'Space Grotesk', sans-serif; vertical-align: middle; flex-shrink: 0; }
 .ticker-cell { display: flex; align-items: center; gap: 8px; }
 .ticker-cell .avatar-img, .ticker-cell .avatar-fallback { flex-shrink: 0; }
 .ticker-cell input.input-cell { width: 64px; flex: 1 1 64px; min-width: 50px; }
@@ -140,17 +193,17 @@ html, body { margin: 0; padding: 0; background: #0A0D10; }
 .quotes-updated { margin: 6px 0 12px; }
 .api-key-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .input-apikey { flex: 1; min-width: 160px; text-align: left; }
-.computed-value { color: #1FD8A4; font-family: 'IBM Plex Mono', monospace; }
+.computed-value { color: var(--up); font-family: 'IBM Plex Mono', monospace; }
 
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
 .chart-wrap { width: 100%; overflow: hidden; }
 .chart-svg { display: block; }
-.chart-svg text { font-family: 'IBM Plex Mono', monospace; fill: #7A8290; font-size: 10px; }
+.chart-svg text { font-family: 'IBM Plex Mono', monospace; fill: var(--text-muted2); font-size: 12px; }
 
 button:focus-visible, input:focus-visible, textarea:focus-visible {
-  outline: 2px solid #E8B339;
+  outline: 2px solid var(--accent-gold);
   outline-offset: 2px;
 }
 
@@ -188,6 +241,7 @@ const parseNum = (v) => {
 };
 
 const fmtBRL = (v) => (v ?? 0).toLocaleString("es", { style: "currency", currency: "BRL" });
+const fmtUSD = (v) => (v ?? 0).toLocaleString("es", { style: "currency", currency: "USD" });
 
 const fmtPct = (v) => `${v >= 0 ? "+" : ""}${(v ?? 0).toLocaleString("es", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
 
@@ -305,6 +359,8 @@ const ICON_PATHS = {
   download: '<path d="M12 3v12"/><path d="M7 11l5 5 5-5"/><path d="M5 20h14"/>',
   "chevron-up": '<path d="M5 15l7-7 7 7"/>',
   "chevron-down": '<path d="M5 9l7 7 7-7"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>',
+  moon: '<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/>',
 };
 
 function icon(name, size = 15, cls = "") {
@@ -348,6 +404,7 @@ const state = {
   hoje: null,
   posicoes: null,
   historico: null,
+  displayCurrency: "BRL",
 };
 
 function loadState() {
@@ -358,6 +415,14 @@ function loadState() {
   try {
     const h = localStorage.getItem("pnl-history");
     if (h) state.history = JSON.parse(h);
+  } catch (_) {}
+  try {
+    const c = localStorage.getItem("pnl-currency");
+    if (c === "USD" || c === "BRL") state.displayCurrency = c;
+  } catch (_) {}
+  try {
+    const t = localStorage.getItem("pnl-theme");
+    if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
   } catch (_) {}
 }
 
@@ -439,7 +504,7 @@ function resetPosicoesState() {
     quotesProgressLabel: null,
     quotesError: null,
     importPurchasesMessage: null,
-    txForm: { rowId: rows[0]?.id || "__new__", newTicker: "", newBroker: "", type: "buy", qty: "", price: "", error: null },
+    txForm: { rowId: rows[0]?.id || "__new__", newTicker: "", newBroker: "", type: "buy", qty: "", price: "", error: null, tickerSearchResults: [], tickerSearchStatus: "idle" },
   };
 }
 
@@ -638,8 +703,8 @@ function fmtK(v) {
 }
 
 function buildChart({ type, data, valueKey, labelKey, height = 180 }) {
-  const W = 600, H = height;
-  const padL = 40, padR = 8, padT = 10, padB = 22;
+  const W = 340, H = height;
+  const padL = 42, padR = 8, padT = 12, padB = 24;
   const innerW = W - padL - padR;
   const innerH = H - padT - padB;
   const values = data.map((d) => d[valueKey]);
@@ -676,12 +741,12 @@ function buildChart({ type, data, valueKey, labelKey, height = 180 }) {
   let body = "";
   if (type === "line") {
     const points = data.map((d, i) => `${xFor(i)},${yFor(d[valueKey])}`).join(" ");
-    body += `<polyline points="${points}" fill="none" stroke="#1FD8A4" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>`;
+    body += `<polyline points="${points}" fill="none" stroke="#1FD8A4" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
     data.forEach((d, i) => {
-      body += `<circle cx="${xFor(i)}" cy="${yFor(d[valueKey])}" r="2.5" fill="#1FD8A4"/>`;
+      body += `<circle cx="${xFor(i)}" cy="${yFor(d[valueKey])}" r="2.2" fill="#1FD8A4"/>`;
     });
   } else if (type === "bar") {
-    const bw = Math.min(28, (innerW / data.length) * 0.6);
+    const bw = Math.min(18, (innerW / data.length) * 0.6);
     data.forEach((d, i) => {
       const v = d[valueKey];
       const y = Math.min(yFor(v), zeroY);
@@ -1013,6 +1078,15 @@ function rowEffectiveValue(r) {
   return computed !== null ? computed : parseNum(r.saldo) || 0;
 }
 
+function rowEffectiveValueUsd(r) {
+  const price = parseNum(r.price);
+  const qty = parseNum(r.quantity);
+  if (price) return qty * price;
+  const fx = parseNum(state.posicoes?.fxRateInput);
+  const saldo = parseNum(r.saldo) || 0;
+  return fx ? saldo / fx : 0;
+}
+
 function updateRowValueCell(id) {
   const row = state.posicoes.rows.find((r) => r.id === id);
   const cell = document.getElementById(`value-cell-${id}`);
@@ -1216,7 +1290,10 @@ function renderPosicoes() {
           ${
             txForm.rowId === "__new__"
               ? `<div class="tx-form-row">
-                  <input class="input-cell" data-bind="txNewTicker" placeholder="Ticker (ej. AAPL)" value="${escapeAttr(txForm.newTicker)}">
+                  <div class="tx-ticker-wrap">
+                    <input class="input-cell" data-bind="txNewTicker" placeholder="Ticker o nombre (ej. Apple)" value="${escapeAttr(txForm.newTicker)}" autocomplete="off">
+                    <div id="ticker-search-results" class="ticker-search-results"></div>
+                  </div>
                   <input class="input-cell" data-bind="txNewBroker" placeholder="Corretora" value="${escapeAttr(txForm.newBroker)}">
                 </div>`
               : ""
@@ -1648,6 +1725,63 @@ function parseCsvLine(line) {
   return out;
 }
 
+let tickerSearchTimer = null;
+
+function searchTickerDebounced(query) {
+  clearTimeout(tickerSearchTimer);
+  const f = state.posicoes.txForm;
+  if (!query || query.trim().length < 2) {
+    f.tickerSearchResults = [];
+    const box = document.getElementById("ticker-search-results");
+    if (box) box.innerHTML = "";
+    return;
+  }
+  tickerSearchTimer = setTimeout(() => runTickerSearch(query.trim()), 350);
+}
+
+async function runTickerSearch(query) {
+  const f = state.posicoes.txForm;
+  const finnhubKey = (state.posicoes.finnhubKey || "").trim();
+  if (!finnhubKey) {
+    f.tickerSearchResults = [];
+    f.error = "Configura tu clave de Finnhub para poder buscar por nombre de empresa.";
+    render();
+    return;
+  }
+  f.tickerSearchStatus = "loading";
+  try {
+    const url = `https://finnhub.io/api/v1/search?q=${encodeURIComponent(query)}&token=${encodeURIComponent(finnhubKey)}`;
+    const resp = await fetch(url);
+    const data = await resp.json();
+    f.tickerSearchResults = Array.isArray(data?.result) ? data.result.slice(0, 6) : [];
+  } catch (err) {
+    f.tickerSearchResults = [];
+  }
+  f.tickerSearchStatus = "idle";
+  renderTickerSearchResults();
+}
+
+function renderTickerSearchResults() {
+  const box = document.getElementById("ticker-search-results");
+  if (!box) return;
+  const f = state.posicoes.txForm;
+  box.innerHTML = f.tickerSearchResults
+    .map(
+      (r) =>
+        `<button class="ticker-search-item" data-action="select-ticker-result" data-symbol="${escapeAttr(r.symbol)}">
+          <b>${escapeHtml(r.symbol)}</b><span class="muted small">${escapeHtml(r.description || "")}</span>
+        </button>`
+    )
+    .join("");
+}
+
+function selectTickerResult(symbol) {
+  const f = state.posicoes.txForm;
+  f.newTicker = symbol;
+  f.tickerSearchResults = [];
+  render();
+}
+
 function addTransaction() {
   const p = state.posicoes;
   const f = p.txForm;
@@ -1689,6 +1823,7 @@ function addTransaction() {
   f.price = "";
   f.newTicker = "";
   f.newBroker = "";
+  f.tickerSearchResults = [];
   render();
 }
 
@@ -1838,10 +1973,14 @@ function switchTab(tab) {
 
 function render() {
   const root = document.getElementById("app");
+  const rowsForTotal = state.tab === "posicoes" && state.posicoes ? state.posicoes.rows : state.portfolio;
   const totalSaldo =
     state.tab === "posicoes" && state.posicoes
       ? state.posicoes.rows.reduce((s, r) => s + rowEffectiveValue(r), 0)
       : state.portfolio.reduce((s, p) => s + (parseNum(p.saldo) || 0), 0);
+  const totalUsd = rowsForTotal.reduce((s, r) => s + rowEffectiveValueUsd(r), 0);
+  const isUsd = state.displayCurrency === "USD";
+  const displayedTotal = isUsd ? (totalUsd ? fmtUSD(totalUsd) : "— US$") : fmtBRL(totalSaldo);
   const lastEntry = state.history.length ? state.history[state.history.length - 1] : null;
   const isTodayEntry = lastEntry && new Date(lastEntry.date).toDateString() === new Date().toDateString();
   const dayChangeHtml = isTodayEntry
@@ -1857,10 +1996,14 @@ function render() {
             <h1 class="brand-title">P&amp;L Diario</h1>
           </div>
           <div class="header-right">
+            <button class="theme-toggle" data-action="toggle-theme" title="Cambiar tema">${icon("sun", 15, "theme-icon-light")}${icon("moon", 15, "theme-icon-dark")}</button>
             <button class="install-pill" id="install-btn" data-action="install-app" hidden>${icon("download", 13)} Instalar app</button>
             <div class="header-total">
-              <span class="header-total-label">Saldo total</span>
-              <span class="header-total-value" id="header-total-value">${fmtBRL(totalSaldo)}</span>
+              <div class="header-total-toprow">
+                <span class="header-total-label">Saldo total</span>
+                <button class="currency-toggle" data-action="toggle-currency">${isUsd ? "US$" : "R$"} ⇄</button>
+              </div>
+              <span class="header-total-value" id="header-total-value">${displayedTotal}</span>
               ${dayChangeHtml}
             </div>
           </div>
@@ -1907,6 +2050,7 @@ function handleAction(action, el) {
     case "trigger-import-backup": document.getElementById("import-backup-input")?.click(); break;
     case "trigger-import-purchases": document.getElementById("import-purchases-input")?.click(); break;
     case "add-transaction": addTransaction(); break;
+    case "select-ticker-result": selectTickerResult(el.dataset.symbol); break;
     case "fetch-quotes": fetchQuotes(); break;
     case "add-demo": addDemo(); break;
     case "import-real-history": importRealHistory(); break;
@@ -1918,6 +2062,17 @@ function handleAction(action, el) {
     case "clear-history": clearHistoryAction(); break;
     case "remove-entry": removeEntryAction(id); break;
     case "install-app": installApp(); break;
+    case "toggle-currency":
+      state.displayCurrency = state.displayCurrency === "USD" ? "BRL" : "USD";
+      try { localStorage.setItem("pnl-currency", state.displayCurrency); } catch (_) {}
+      render();
+      break;
+    case "toggle-theme": {
+      const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+      document.documentElement.dataset.theme = next;
+      try { localStorage.setItem("pnl-theme", next); } catch (_) {}
+      break;
+    }
   }
 }
 
@@ -1966,6 +2121,7 @@ root.addEventListener("input", (e) => {
     updateLiveTotal();
   } else if (bind === "txNewTicker") {
     state.posicoes.txForm.newTicker = el.value;
+    searchTickerDebounced(el.value);
   } else if (bind === "txNewBroker") {
     state.posicoes.txForm.newBroker = el.value;
   } else if (bind === "txQty") {
