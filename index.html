@@ -121,6 +121,10 @@ html, body { margin: 0; padding: 0; background: #0A0D10; }
 .breakdown-bar-track { flex: 1; height: 8px; background: #1C2128; border-radius: 4px; overflow: hidden; }
 .breakdown-bar-fill { height: 100%; border-radius: 4px; }
 .breakdown-pct { width: 44px; flex-shrink: 0; text-align: right; font-size: 12px; font-family: 'IBM Plex Mono', monospace; color: #ABB2BC; }
+.tx-form { margin-top: 16px; padding-top: 14px; border-top: 1px solid #1C2128; display: flex; flex-direction: column; gap: 8px; }
+.tx-select { width: 100%; text-align: left; }
+.tx-form-row { display: flex; gap: 8px; }
+.tx-form-row .input-cell { flex: 1; min-width: 0; }
 
 .icon { display: inline-block; vertical-align: middle; flex-shrink: 0; }
 
@@ -426,6 +430,7 @@ function resetPosicoesState() {
     quotesProgressLabel: null,
     quotesError: null,
     importPurchasesMessage: null,
+    txForm: { rowId: rows[0]?.id || "__new__", newTicker: "", newBroker: "", type: "buy", qty: "", price: "", error: null },
   };
 }
 
@@ -1102,6 +1107,7 @@ function renderBreakdown(rows) {
 function renderPosicoes() {
   const p = state.posicoes;
   const rows = p.rows;
+  const txForm = p.txForm;
   const liveTotal = rows.reduce((s, r) => s + rowEffectiveValue(r), 0);
   const fx = parseNum(p.fxRateInput);
 
@@ -1190,6 +1196,35 @@ function renderPosicoes() {
           <button class="btn btn-ghost" data-action="trigger-import-purchases">${icon("refresh", 15)} Importar historial de compras (CSV)</button>
         </div>
         <input type="file" id="import-purchases-input" accept=".csv,text/csv" hidden>
+
+        <div class="tx-form">
+          <p class="muted small breakdown-subtitle">O agrega una compra o venta nueva</p>
+          ${txForm.error ? `<div class="banner banner-warn">${icon("alert-triangle", 15)} ${escapeHtml(txForm.error)}</div>` : ""}
+          <select class="input-cell tx-select" data-bind="txRowId">
+            ${rows.map((r) => `<option value="${r.id}" ${txForm.rowId === r.id ? "selected" : ""}>${escapeHtml(r.ticker || "(sin ticker)")} · ${escapeHtml(r.broker || "—")}</option>`).join("")}
+            <option value="__new__" ${txForm.rowId === "__new__" ? "selected" : ""}>+ Nueva posición</option>
+          </select>
+          ${
+            txForm.rowId === "__new__"
+              ? `<div class="tx-form-row">
+                  <input class="input-cell" data-bind="txNewTicker" placeholder="Ticker (ej. AAPL)" value="${escapeAttr(txForm.newTicker)}">
+                  <input class="input-cell" data-bind="txNewBroker" placeholder="Corretora" value="${escapeAttr(txForm.newBroker)}">
+                </div>`
+              : ""
+          }
+          <div class="tx-form-row">
+            <select class="input-cell" data-bind="txType">
+              <option value="buy" ${txForm.type === "buy" ? "selected" : ""}>Compra</option>
+              <option value="sell" ${txForm.type === "sell" ? "selected" : ""}>Venta</option>
+            </select>
+            <input class="input-cell" inputmode="decimal" data-bind="txQty" placeholder="Cantidad" value="${escapeAttr(txForm.qty)}">
+            <input class="input-cell" inputmode="decimal" data-bind="txPrice" placeholder="Precio US$" value="${escapeAttr(txForm.price)}">
+          </div>
+          <div class="row-actions">
+            <button class="btn btn-primary" data-action="add-transaction">${icon("plus", 15)} Agregar transacción</button>
+          </div>
+          <p class="upload-hint">Actualiza la cantidad y recalcula el precio promedio de compra de esa posición (método costo promedio). Recuerda tocar "Guardar posiciones" después para que quede guardado.</p>
+        </div>
       </div>
 
       <div class="card">
@@ -1604,6 +1639,50 @@ function parseCsvLine(line) {
   return out;
 }
 
+function addTransaction() {
+  const p = state.posicoes;
+  const f = p.txForm;
+  const qty = parseNum(f.qty);
+  const price = parseNum(f.price);
+  f.error = null;
+
+  if (!qty || qty <= 0) { f.error = "Ingresa una cantidad válida (mayor a 0)."; render(); return; }
+  if (f.type === "buy" && (!price || price <= 0)) { f.error = "Ingresa un precio válido (mayor a 0)."; render(); return; }
+
+  if (f.rowId === "__new__") {
+    const ticker = f.newTicker.trim().toUpperCase();
+    if (!ticker) { f.error = "Ingresa el ticker de la nueva posición."; render(); return; }
+    if (f.type === "sell") { f.error = "No se puede vender algo que todavía no está en tu carteira. Agrégalo como compra primero."; render(); return; }
+    const newRow = { id: uid(), ticker, broker: f.newBroker.trim(), quantity: qty, avgCost: price, price: "", saldo: 0 };
+    p.rows = [...p.rows, newRow];
+    p.dirty = true;
+    f.rowId = newRow.id;
+  } else {
+    const row = p.rows.find((r) => r.id === f.rowId);
+    if (!row) { f.error = "No encontré esa posición."; render(); return; }
+    const oldQty = parseNum(row.quantity);
+    const oldAvgCost = typeof row.avgCost === "number" ? row.avgCost : null;
+    if (f.type === "buy") {
+      const newQty = oldQty + qty;
+      row.avgCost = oldAvgCost ? (oldQty * oldAvgCost + qty * price) / newQty : price;
+      row.quantity = newQty;
+    } else {
+      if (qty > oldQty + 0.0001) { f.error = `Esa posición solo tiene ${oldQty} unidades — no se puede vender ${qty}.`; render(); return; }
+      const newQty = Math.max(oldQty - qty, 0);
+      row.quantity = newQty;
+      if (newQty <= 0.0001) { row.avgCost = null; row.quantity = 0; }
+      // avgCost of remaining shares stays the same (average-cost method)
+    }
+    p.dirty = true;
+  }
+
+  f.qty = "";
+  f.price = "";
+  f.newTicker = "";
+  f.newBroker = "";
+  render();
+}
+
 function importPurchasesFile(file) {
   const p = state.posicoes;
   const reader = new FileReader();
@@ -1818,6 +1897,7 @@ function handleAction(action, el) {
     case "export-backup": exportBackup(); break;
     case "trigger-import-backup": document.getElementById("import-backup-input")?.click(); break;
     case "trigger-import-purchases": document.getElementById("import-purchases-input")?.click(); break;
+    case "add-transaction": addTransaction(); break;
     case "fetch-quotes": fetchQuotes(); break;
     case "add-demo": addDemo(); break;
     case "import-real-history": importRealHistory(); break;
@@ -1875,6 +1955,14 @@ root.addEventListener("input", (e) => {
     persistQuotesCache();
     state.posicoes.rows.forEach((r) => updateRowValueCell(r.id));
     updateLiveTotal();
+  } else if (bind === "txNewTicker") {
+    state.posicoes.txForm.newTicker = el.value;
+  } else if (bind === "txNewBroker") {
+    state.posicoes.txForm.newBroker = el.value;
+  } else if (bind === "txQty") {
+    state.posicoes.txForm.qty = el.value;
+  } else if (bind === "txPrice") {
+    state.posicoes.txForm.price = el.value;
   } else if (["ticker", "broker", "quantity", "price", "saldo"].includes(bind)) {
     const row = state.posicoes.rows.find((r) => r.id === id);
     if (row) {
@@ -1910,6 +1998,11 @@ root.addEventListener("change", (e) => {
     importPurchasesFile(e.target.files[0]);
     e.target.value = "";
   }
+
+  const txRowSel = e.target.closest('[data-bind="txRowId"]');
+  if (txRowSel) { state.posicoes.txForm.rowId = txRowSel.value; render(); }
+  const txTypeSel = e.target.closest('[data-bind="txType"]');
+  if (txTypeSel) state.posicoes.txForm.type = txTypeSel.value;
 });
 
 /* ---------------------------------------------------------------------- */
