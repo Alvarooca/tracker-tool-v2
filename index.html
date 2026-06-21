@@ -359,15 +359,28 @@ async function fetchQuotes() {
   const tickers = [...new Set(state.portfolio.map((r) => r.ticker).filter(Boolean))];
   const errors = [];
 
-  // 1) USD/BRL via Frankfurter — free, no key, no rate limit, doesn't touch Twelve Data's quota.
-  const fxPromise = fetch("https://api.frankfurter.app/latest?from=USD&to=BRL")
-    .then((r) => r.json())
-    .then((data) => {
+  // 1) USD/BRL — tries Frankfurter first (ECB data), falls back to ExchangeRate-API's
+  // open endpoint if the first one is unreachable (e.g. blocked by a network/carrier).
+  // Neither touches Twelve Data's quota.
+  const fxPromise = (async () => {
+    try {
+      const r = await fetch("https://api.frankfurter.app/latest?from=USD&to=BRL");
+      const data = await r.json();
       const rate = data?.rates?.BRL;
-      if (typeof rate === "number") p.fxRateInput = String(rate);
-      else errors.push("Não consegui obter o câmbio USD/BRL.");
-    })
-    .catch(() => errors.push("Não consegui obter o câmbio USD/BRL (sem conexão)."));
+      if (typeof rate === "number") { p.fxRateInput = String(rate); return; }
+      throw new Error("sem dado");
+    } catch (_) {
+      try {
+        const r2 = await fetch("https://open.er-api.com/v6/latest/USD");
+        const data2 = await r2.json();
+        const rate2 = data2?.rates?.BRL;
+        if (typeof rate2 === "number") { p.fxRateInput = String(rate2); return; }
+        throw new Error("sem dado 2");
+      } catch (_2) {
+        errors.push("Não consegui obter o câmbio USD/BRL automaticamente. Digite manualmente o valor.");
+      }
+    }
+  })();
 
   // 2) Stock prices via Twelve Data — batched in groups of 8 symbols to respect the
   // free plan's limit of 8 API credits per minute (each symbol = 1 credit per request).
