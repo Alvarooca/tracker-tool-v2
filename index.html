@@ -176,6 +176,8 @@ html, body { margin: 0; padding: 0; background: var(--bg-app); }
 .tx-select { width: 100%; text-align: left; }
 .tx-form-row { display: flex; gap: 8px; }
 .tx-form-row .input-cell { flex: 1; min-width: 0; }
+.tx-date { width: 100%; color-scheme: dark; }
+[data-theme="light"] .tx-date { color-scheme: light; }
 .tx-ticker-wrap { position: relative; flex: 1; min-width: 0; }
 .ticker-search-results { position: absolute; top: 100%; left: 0; right: 0; z-index: 20; background: var(--bg-card); border: 1px solid var(--border-input); border-radius: 8px; margin-top: 4px; overflow: hidden; max-height: 220px; overflow-y: auto; }
 .ticker-search-item { display: flex; flex-direction: column; gap: 1px; width: 100%; text-align: left; background: transparent; border: none; border-bottom: 1px solid var(--border); color: var(--text-primary); padding: 8px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; cursor: pointer; }
@@ -404,6 +406,7 @@ const state = {
   tab: "hoje",
   portfolio: DEFAULT_PORTFOLIO.map((p) => ({ ...p })),
   history: [],
+  transactions: [],
   hoje: null,
   posicoes: null,
   historico: null,
@@ -420,6 +423,10 @@ function loadState() {
     if (h) state.history = JSON.parse(h);
   } catch (_) {}
   try {
+    const tx = localStorage.getItem("pnl-transactions");
+    if (tx) state.transactions = JSON.parse(tx);
+  } catch (_) {}
+  try {
     const c = localStorage.getItem("pnl-currency");
     if (c === "USD" || c === "BRL") state.displayCurrency = c;
   } catch (_) {}
@@ -427,6 +434,10 @@ function loadState() {
     const t = localStorage.getItem("pnl-theme");
     if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
   } catch (_) {}
+}
+
+function persistTransactions() {
+  try { localStorage.setItem("pnl-transactions", JSON.stringify(state.transactions)); } catch (_) {}
 }
 
 function persistPortfolio() {
@@ -507,7 +518,7 @@ function resetPosicoesState() {
     quotesProgressLabel: null,
     quotesError: null,
     importPurchasesMessage: null,
-    txForm: { rowId: rows[0]?.id || "__new__", newTicker: "", newBroker: "", type: "buy", qty: "", price: "", error: null, tickerSearchResults: [], tickerSearchStatus: "idle" },
+    txForm: { rowId: rows[0]?.id || "__new__", newTicker: "", newBroker: "", type: "buy", qty: "", price: "", date: todayYMD(), error: null, tickerSearchResults: [], tickerSearchStatus: "idle" },
   };
 }
 
@@ -1310,6 +1321,7 @@ function renderPosicoes() {
             <input class="input-cell" inputmode="decimal" data-bind="txQty" placeholder="Cantidad" value="${escapeAttr(txForm.qty)}">
             <input class="input-cell" inputmode="decimal" data-bind="txPrice" placeholder="Precio US$" value="${escapeAttr(txForm.price)}">
           </div>
+          <input class="input-cell tx-date" type="date" data-bind="txDate" value="${escapeAttr(txForm.date)}" style="text-align:left">
           <div class="row-actions">
             <button class="btn btn-primary" data-action="add-transaction">${icon("plus", 15)} Agregar transacción</button>
           </div>
@@ -1399,7 +1411,7 @@ function renderHistorico() {
 
   const sorted = [...state.history].sort((a, b) => new Date(a.date) - new Date(b.date));
 
-  const allYears = [...new Set(sorted.map((h) => new Date(h.date).getFullYear()))].sort((a, b) => b - a);
+  const allYears = [...new Set([...sorted.map((h) => new Date(h.date).getFullYear()), ...state.transactions.map((t) => new Date(t.date).getFullYear())])].sort((a, b) => b - a);
   const currentYear = new Date().getFullYear();
   const currentMonthKey = todayYMD().slice(0, 7);
   const pastYears = allYears.filter((y) => y < currentYear);
@@ -1423,12 +1435,23 @@ function renderHistorico() {
     </div>`;
 
   if (!periodFiltered.length) {
+    const txInPeriod = state.transactions.some((t) => {
+      const f = hs.periodFilter;
+      if (f === "all") return true;
+      if (f === "month") return String(t.date).slice(0, 7) === currentMonthKey;
+      if (f === "year") return new Date(t.date).getFullYear() === currentYear;
+      return String(new Date(t.date).getFullYear()) === f;
+    });
     return `
       <div class="stack">
         ${periodPillsHtml}
         <div class="card empty-state">
-          <p>No hay registros ${periodLabel === "Todo" ? "" : periodLabel}.</p>
-          <p class="muted small">Prueba otro período, o vuelve a "Todo" para ver el historial completo.</p>
+          <p>No hay registros de seguimiento diario ${periodLabel === "Todo" ? "" : periodLabel}.</p>
+          <p class="muted small">${
+            txInPeriod
+              ? "Sí hay compras/ventas registradas en este período, pero el seguimiento diario (P&L) recién empezó después. Usa \"Importar histórico real\" si quieres rellenar esos días."
+              : "Prueba otro período, o vuelve a \"Todo\" para ver el historial completo."
+          }</p>
         </div>
       </div>`;
   }
@@ -1738,6 +1761,7 @@ function exportBackup() {
     exportedAt: new Date().toISOString(),
     portfolio: state.portfolio,
     history: state.history,
+    transactions: state.transactions,
     apiKey: cache.apiKey,
     finnhubKey: cache.finnhubKey,
     quotes: cache.quotes,
@@ -1840,6 +1864,7 @@ function addTransaction() {
     p.rows = [...p.rows, newRow];
     p.dirty = true;
     f.rowId = newRow.id;
+    state.transactions.push({ id: uid(), source: "manual", ticker, date: new Date(`${f.date}T12:00:00`).toISOString(), type: f.type, qty, price });
   } else {
     const row = p.rows.find((r) => r.id === f.rowId);
     if (!row) { f.error = "No encontré esa posición."; render(); return; }
@@ -1857,7 +1882,9 @@ function addTransaction() {
       // avgCost of remaining shares stays the same (average-cost method)
     }
     p.dirty = true;
+    state.transactions.push({ id: uid(), source: "manual", ticker: row.ticker, date: new Date(`${f.date}T12:00:00`).toISOString(), type: f.type, qty, price: price || row.avgCost || 0 });
   }
+  persistTransactions();
 
   f.qty = "";
   f.price = "";
@@ -1889,6 +1916,27 @@ function importPurchasesFile(file) {
       const txs = lines.slice(1).map((l) => parseCsvLine(l)).filter((c) => c.length >= 4);
       // sort chronologically so sells reduce the running average cost correctly, oldest first.
       txs.sort((a, b) => new Date(a[idx.date]) - new Date(b[idx.date]));
+
+      // Keep a persisted record of every transaction (deduped), so the app remembers how far
+      // back your investing history goes — used e.g. to build the year filters in Historial.
+      const txKey = (t) => `${t.ticker}|${t.date}|${t.type}|${t.qty.toFixed(4)}|${t.price.toFixed(4)}`;
+      const existingKeys = new Set(state.transactions.map(txKey));
+      txs.forEach((cols) => {
+        const rawSym = (cols[idx.symbol] || "").trim();
+        const sym = rawSym.includes(":") ? rawSym.split(":").pop() : rawSym;
+        if (!sym) return;
+        const type = (cols[idx.type] || "").trim().toLowerCase();
+        if (type !== "buy" && type !== "sell") return;
+        const dateRaw = cols[idx.date] || "";
+        const date = dateRaw ? new Date(dateRaw).toISOString() : new Date().toISOString();
+        const rec = { ticker: sym, date, type, qty: parseNum(cols[idx.qty]), price: parseNum(cols[idx.price]) };
+        const key = txKey(rec);
+        if (!existingKeys.has(key)) {
+          existingKeys.add(key);
+          state.transactions.push({ id: uid(), source: "csv", ...rec });
+        }
+      });
+      persistTransactions();
 
       const qty = {};
       const cost = {};
@@ -1952,6 +2000,8 @@ function importBackupFile(file) {
       }
       state.portfolio = data.portfolio;
       state.history = Array.isArray(data.history) ? data.history : [];
+      state.transactions = Array.isArray(data.transactions) ? data.transactions : [];
+      persistTransactions();
       try {
         localStorage.setItem("pnl-twelvedata-key", data.apiKey || "");
         localStorage.setItem("pnl-finnhub-key", data.finnhubKey || "");
@@ -2169,6 +2219,8 @@ root.addEventListener("input", (e) => {
     state.posicoes.txForm.qty = el.value;
   } else if (bind === "txPrice") {
     state.posicoes.txForm.price = el.value;
+  } else if (bind === "txDate") {
+    state.posicoes.txForm.date = el.value;
   } else if (["ticker", "broker", "quantity", "price", "saldo"].includes(bind)) {
     const row = state.posicoes.rows.find((r) => r.id === id);
     if (row) {
