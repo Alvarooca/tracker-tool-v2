@@ -1007,77 +1007,62 @@ function addDemo() {
 
 async function importRealHistory() {
   const h = state.historico;
-  const finnhubKey = (state.posicoes.finnhubKey || "").trim();
   const twelveKey = (state.posicoes.apiKey || "").trim();
-  if (!finnhubKey && !twelveKey) {
-    h.importError = ["Configura tu clave de Finnhub (precios) o de Twelve Data (cambio) en la pestaña Posiciones primero."];
+  if (!twelveKey) {
+    h.importError = ["Configura tu clave de API de Twelve Data en la pestaña Posiciones primero."];
     render();
     return;
   }
   h.importStatus = "loading";
   h.importError = null;
   h.importMessage = null;
-  h.importProgressLabel = "Buscando histórico…";
   render();
 
+  // Nota: el histórico de precios de Finnhub (stock/candle) es solo para plan pago,
+  // así que esta función usa Twelve Data para todo (acciones + câmbio), igual que antes.
   const tickers = [...new Set(state.portfolio.map((p) => p.ticker).filter(Boolean))];
+  const symbols = [...tickers, "USD/BRL"];
   const errors = [];
   const tickerCloses = {}; // ticker -> { 'YYYY-MM-DD': closePrice }
   const fxRates = {}; // 'YYYY-MM-DD' -> rate
 
-  // Stock closes via Finnhub — 60 calls/min on the free plan, all tickers fetch at once.
-  const stocksPromise = (async () => {
-    if (!finnhubKey) { if (tickers.length) errors.push("Sin clave de Finnhub: no se importó histórico de las acciones."); return; }
-    const toUnix = Math.floor(Date.now() / 1000);
-    const fromUnix = toUnix - 18 * 86400;
-    await Promise.all(
-      tickers.map(async (sym) => {
-        try {
-          const url = `https://finnhub.io/api/v1/stock/candle?symbol=${encodeURIComponent(sym)}&resolution=D&from=${fromUnix}&to=${toUnix}&token=${encodeURIComponent(finnhubKey)}`;
-          const resp = await fetch(url);
-          const data = await resp.json().catch(() => null);
-          if (!resp.ok) {
-            errors.push(`${sym}: HTTP ${resp.status}${data?.error ? " — " + data.error : ""}.`);
-            return;
-          }
-          if (data?.s !== "ok" || !Array.isArray(data.c) || !Array.isArray(data.t)) {
-            errors.push(`Sin histórico para ${sym} (estado: ${data?.s ?? data?.error ?? "desconocido"}).`);
-            return;
-          }
-          const map = {};
-          data.t.forEach((ts, i) => {
-            const d = new Date(ts * 1000).toISOString().slice(0, 10);
-            const close = Number(data.c[i]);
-            if (Number.isFinite(close)) map[d] = close;
-          });
-          tickerCloses[sym] = map;
-        } catch (err) {
-          errors.push(`No pude buscar ${sym} en Finnhub (sin conexión).`);
-        }
-      })
-    );
-  })();
+  const CHUNK_SIZE = 8;
+  const chunks = [];
+  for (let i = 0; i < symbols.length; i += CHUNK_SIZE) chunks.push(symbols.slice(i, i + CHUNK_SIZE));
 
-  // USD/BRL history via Twelve Data — just 1 symbol, far under its free per-minute limit.
-  const fxPromise = (async () => {
-    if (!twelveKey) { errors.push("Sin clave de Twelve Data: no se importó histórico del cambio."); return; }
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i];
+    if (i > 0) {
+      h.importProgressLabel = `Esperando ~1 min (límite del plan gratis)… grupo ${i + 1}/${chunks.length}`;
+      render();
+      await new Promise((r) => setTimeout(r, 61000));
+    }
+    h.importProgressLabel = chunks.length > 1 ? `Buscando histórico — grupo ${i + 1}/${chunks.length}…` : "Buscando histórico…";
+    render();
     try {
-      const url = `https://api.twelvedata.com/time_series?symbol=USD/BRL&interval=1day&outputsize=15&apikey=${encodeURIComponent(twelveKey)}`;
+      const url = `https://api.twelvedata.com/time_series?symbol=${chunk.join(",")}&interval=1day&outputsize=15&apikey=${encodeURIComponent(twelveKey)}`;
       const resp = await fetch(url);
       const data = await resp.json();
-      if (data && data.status === "error") { errors.push(data.message || "Error al buscar histórico del cambio en Twelve Data."); return; }
-      if (!Array.isArray(data?.values)) { errors.push("Sin histórico para USD/BRL."); return; }
-      data.values.forEach((v) => {
-        const d = String(v.datetime).slice(0, 10);
-        const close = parseFloat(v.close);
-        if (Number.isFinite(close)) fxRates[d] = close;
+      if (data && data.status === "error") {
+        errors.push(data.message || "Error al buscar histórico en Twelve Data.");
+        continue;
+      }
+      const shaped = chunk.length === 1 ? { [chunk[0]]: data } : data;
+      Object.entries(shaped || {}).forEach(([sym, val]) => {
+        if (!val || !Array.isArray(val.values)) { errors.push(`Sin histórico para ${sym}.`); return; }
+        const map = {};
+        val.values.forEach((v) => {
+          const d = String(v.datetime).slice(0, 10);
+          const close = parseFloat(v.close);
+          if (Number.isFinite(close)) map[d] = close;
+        });
+        if (sym === "USD/BRL") Object.assign(fxRates, map);
+        else tickerCloses[sym] = map;
       });
     } catch (err) {
-      errors.push("No pude buscar histórico del cambio en Twelve Data (sin conexión).");
+      errors.push("No pude buscar histórico en Twelve Data (sin conexión).");
     }
-  })();
-
-  await Promise.all([stocksPromise, fxPromise]);
+  }
   h.importProgressLabel = null;
 
   // Day-over-day % change, computed within each series' own trading calendar.
