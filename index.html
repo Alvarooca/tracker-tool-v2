@@ -99,6 +99,7 @@ html, body { margin: 0; padding: 0; }
 
 .banner { display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; padding: 10px 12px; border-radius: 8px; margin-bottom: 12px; }
 .banner-warn { background: rgba(232, 179, 57, 0.1); color: #E8B339; border: 1px solid rgba(232, 179, 57, 0.25); }
+.banner-ok { background: rgba(31, 216, 164, 0.1); color: #1FD8A4; border: 1px solid rgba(31, 216, 164, 0.25); }
 .error-list { margin: 0; padding-left: 18px; }
 .error-list li { margin-bottom: 4px; }
 .error-list li:last-child { margin-bottom: 0; }
@@ -436,7 +437,7 @@ async function fetchQuotes() {
   render();
 }
 function resetHistoricoState() {
-  state.historico = { confirmClear: false };
+  state.historico = { confirmClear: false, importStatus: "idle", importProgressLabel: null, importMessage: null, importError: null };
 }
 
 /* ---------------------------------------------------------------------- */
@@ -847,12 +848,26 @@ function savePositions() {
 /* ---------------------------------------------------------------------- */
 
 function renderHistorico() {
+  const hs = state.historico;
+  const importBtnLabel = hs.importStatus === "loading" ? (hs.importProgressLabel || "Buscando…") : "Importar histórico real (14 dias)";
+  const importBanner = hs.importError
+    ? `<div class="banner banner-warn">${icon("alert-triangle", 15)} ${
+        hs.importError.length > 1 ? `<ul class="error-list">${hs.importError.map((e) => `<li>${escapeHtml(e)}</li>`).join("")}</ul>` : escapeHtml(hs.importError[0])
+      }</div>`
+    : hs.importMessage
+    ? `<div class="banner banner-ok">${icon("check-circle", 15)} ${escapeHtml(hs.importMessage)}</div>`
+    : "";
+
   if (!state.history.length) {
     return `
       <div class="card empty-state">
         <p>Nenhum resultado salvo ainda.</p>
-        <p class="muted small">Calcule o resultado de hoje na aba "Hoje" e salve para começar o histórico, ou experimente a app com dados fictícios.</p>
-        <button class="btn btn-primary" style="margin-top:14px" data-action="add-demo">${icon("sparkles", 15)} Gerar dados de teste (14 dias)</button>
+        <p class="muted small">Calcule o resultado de hoje na aba "Hoje" e salve para começar o histórico, importe os últimos dias reais, ou experimente a app com dados fictícios.</p>
+        ${importBanner}
+        <button class="btn btn-primary" style="margin-top:14px" data-action="import-real-history" ${hs.importStatus === "loading" ? "disabled" : ""}>
+          ${icon("refresh", 15, hs.importStatus === "loading" ? "spin" : "")} ${importBtnLabel}
+        </button>
+        <button class="btn btn-ghost" style="margin-top:8px" data-action="add-demo">${icon("sparkles", 15)} Gerar dados de teste (14 dias)</button>
       </div>`;
   }
 
@@ -882,9 +897,13 @@ function renderHistorico() {
 
   return `
     <div class="stack">
+      ${importBanner}
       <div class="toolbar-row">
+        <button class="btn btn-ghost btn-sm" data-action="import-real-history" ${hs.importStatus === "loading" ? "disabled" : ""}>
+          ${icon("refresh", 13, hs.importStatus === "loading" ? "spin" : "")} ${importBtnLabel}
+        </button>
         <button class="btn btn-ghost btn-sm" data-action="add-demo">${icon("sparkles", 13)} Gerar mais dados de teste</button>
-        <button class="btn btn-ghost btn-sm" data-action="clear-history">${icon("trash", 13)} ${state.historico.confirmClear ? "Confirmar limpeza?" : "Limpar histórico"}</button>
+        <button class="btn btn-ghost btn-sm" data-action="clear-history">${icon("trash", 13)} ${hs.confirmClear ? "Confirmar limpeza?" : "Limpar histórico"}</button>
       </div>
       <div class="card">
         <h2 class="card-title">Patrimônio acumulado</h2>
@@ -908,6 +927,134 @@ function addDemo() {
   const demo = generateDemoEntries(state.portfolio);
   state.history = [...state.history, ...demo].sort((a, b) => new Date(a.date) - new Date(b.date));
   persistHistory();
+  render();
+}
+
+async function importRealHistory() {
+  const h = state.historico;
+  const apiKey = (state.posicoes.apiKey || "").trim();
+  if (!apiKey) {
+    h.importError = ["Configure sua chave de API da Twelve Data na aba Posições primeiro."];
+    render();
+    return;
+  }
+  h.importStatus = "loading";
+  h.importError = null;
+  h.importMessage = null;
+  render();
+
+  const tickers = [...new Set(state.portfolio.map((p) => p.ticker).filter(Boolean))];
+  const errors = [];
+  const tickerCloses = {}; // ticker -> { 'YYYY-MM-DD': closePrice }
+
+  const CHUNK_SIZE = 8;
+  const chunks = [];
+  for (let i = 0; i < tickers.length; i += CHUNK_SIZE) chunks.push(tickers.slice(i, i + CHUNK_SIZE));
+
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i];
+    if (i > 0) {
+      h.importProgressLabel = `Aguardando ~1 min (limite do plano gratuito)… grupo ${i + 1}/${chunks.length}`;
+      render();
+      await new Promise((r) => setTimeout(r, 61000));
+    }
+    h.importProgressLabel = chunks.length > 1 ? `Buscando histórico — grupo ${i + 1}/${chunks.length}…` : "Buscando histórico…";
+    render();
+    try {
+      const url = `https://api.twelvedata.com/time_series?symbol=${chunk.join(",")}&interval=1day&outputsize=15&apikey=${encodeURIComponent(apiKey)}`;
+      const resp = await fetch(url);
+      const data = await resp.json();
+      if (data && data.status === "error") {
+        errors.push(data.message || "Erro ao buscar histórico na Twelve Data.");
+        continue;
+      }
+      const shaped = chunk.length === 1 ? { [chunk[0]]: data } : data;
+      Object.entries(shaped || {}).forEach(([sym, val]) => {
+        if (!val || !Array.isArray(val.values)) { errors.push(`Sem histórico para ${sym}.`); return; }
+        const map = {};
+        val.values.forEach((v) => {
+          const d = String(v.datetime).slice(0, 10);
+          const close = parseFloat(v.close);
+          if (Number.isFinite(close)) map[d] = close;
+        });
+        tickerCloses[sym] = map;
+      });
+    } catch (err) {
+      errors.push("Não consegui buscar histórico na Twelve Data (sem conexão).");
+    }
+  }
+  h.importProgressLabel = null;
+
+  // FX history via Frankfurter (date range). If it fails, ticker data is still imported,
+  // just with câmbio = 0% on every imported day (editable later, same as any other entry).
+  const fxRates = {};
+  try {
+    const end = new Date();
+    const start = new Date(end.getTime() - 18 * 86400000);
+    const fmt = (d) => d.toISOString().slice(0, 10);
+    const url = `https://api.frankfurter.app/${fmt(start)}..${fmt(end)}?from=USD&to=BRL`;
+    const resp = await fetch(url);
+    const data = await resp.json();
+    Object.entries(data?.rates || {}).forEach(([d, v]) => {
+      if (typeof v?.BRL === "number") fxRates[d] = v.BRL;
+    });
+  } catch (err) {
+    errors.push("Não consegui buscar o histórico do câmbio USD/BRL.");
+  }
+
+  // Day-over-day % change, computed within each series' own trading calendar.
+  const tickerChangePct = {};
+  Object.entries(tickerCloses).forEach(([sym, closesByDate]) => {
+    const dates = Object.keys(closesByDate).sort();
+    const pctByDate = {};
+    for (let i = 1; i < dates.length; i++) {
+      const prev = closesByDate[dates[i - 1]];
+      const curr = closesByDate[dates[i]];
+      if (prev) pctByDate[dates[i]] = ((curr - prev) / prev) * 100;
+    }
+    tickerChangePct[sym] = pctByDate;
+  });
+
+  const fxDates = Object.keys(fxRates).sort();
+  const fxChangePct = {};
+  for (let i = 1; i < fxDates.length; i++) {
+    const prev = fxRates[fxDates[i - 1]];
+    const curr = fxRates[fxDates[i]];
+    if (prev) fxChangePct[fxDates[i]] = ((curr - prev) / prev) * 100;
+  }
+
+  const allDates = new Set();
+  Object.values(tickerChangePct).forEach((m) => Object.keys(m).forEach((d) => allDates.add(d)));
+  Object.keys(fxChangePct).forEach((d) => allDates.add(d));
+
+  const existingDates = new Set(state.history.map((e) => String(e.date).slice(0, 10)));
+  const totalSaldo = state.portfolio.reduce((s, p) => s + parseNum(p.saldo), 0);
+
+  const newEntries = [...allDates]
+    .filter((d) => !existingDates.has(d))
+    .sort()
+    .map((d) => {
+      const rows = state.portfolio.map((p) => {
+        const pct = tickerChangePct[p.ticker]?.[d] ?? 0;
+        const saldo = parseNum(p.saldo);
+        return { id: p.id, ticker: p.ticker, broker: p.broker, saldo, changePct: pct, gain: (saldo * pct) / 100 };
+      });
+      const priceTotal = rows.reduce((s, r) => s + r.gain, 0);
+      const fxPct = fxChangePct[d] ?? 0;
+      const fxGain = (totalSaldo * fxPct) / 100;
+      return { id: `real-${d}`, date: `${d}T12:00:00`, rows, fxPct, fxGain, priceTotal, total: priceTotal + fxGain };
+    });
+
+  state.history = [...state.history, ...newEntries].sort((a, b) => new Date(a.date) - new Date(b.date));
+  persistHistory();
+
+  h.importStatus = "idle";
+  h.importError = errors.length ? errors : null;
+  h.importMessage = newEntries.length
+    ? `${newEntries.length} dia(s) importado(s) com dados reais.`
+    : errors.length
+    ? null
+    : "Nenhum dia novo para importar (esses dias já estavam no histórico).";
   render();
 }
 
@@ -999,6 +1146,7 @@ function handleAction(action, el) {
     case "save-positions": savePositions(); break;
     case "fetch-quotes": fetchQuotes(); break;
     case "add-demo": addDemo(); break;
+    case "import-real-history": importRealHistory(); break;
     case "clear-history": clearHistoryAction(); break;
     case "remove-entry": removeEntryAction(id); break;
     case "install-app": installApp(); break;
