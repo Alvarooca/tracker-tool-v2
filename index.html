@@ -109,6 +109,10 @@ html, body { margin: 0; padding: 0; }
 
 .icon { display: inline-block; vertical-align: middle; flex-shrink: 0; }
 
+.avatar-img { border-radius: 50%; object-fit: cover; vertical-align: middle; flex-shrink: 0; background: #fff; }
+.avatar-fallback { display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; color: #0A0D10; font-weight: 700; font-family: 'Space Grotesk', sans-serif; vertical-align: middle; flex-shrink: 0; }
+.ticker-cell { display: flex; align-items: center; gap: 8px; }
+
 .quotes-bar { display: flex; align-items: flex-end; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
 .quotes-fx { display: flex; flex-direction: column; gap: 4px; min-width: 110px; }
 .input-fx { text-align: left; }
@@ -257,6 +261,29 @@ function icon(name, size = 15, cls = "") {
 }
 
 /* ---------------------------------------------------------------------- */
+/*  Ticker avatars (real company logo via Finnhub, with a colored-initial  */
+/*  fallback while loading, on error, or for non-stock symbols like fx)   */
+/* ---------------------------------------------------------------------- */
+
+const AVATAR_PALETTE = ["#E8B339", "#1FD8A4", "#5B8DEF", "#E8638C", "#A78BFA", "#F2994A", "#4FC3D9", "#9CCC65"];
+
+function avatarColor(ticker) {
+  let hash = 0;
+  for (let i = 0; i < ticker.length; i++) hash = (hash * 31 + ticker.charCodeAt(i)) | 0;
+  return AVATAR_PALETTE[Math.abs(hash) % AVATAR_PALETTE.length];
+}
+
+function avatarHtml(ticker, logoUrl, size = 22) {
+  const initial = escapeHtml((ticker || "?").slice(0, 1).toUpperCase());
+  const fallback = `<span class="avatar-fallback" style="width:${size}px;height:${size}px;font-size:${Math.round(size * 0.55)}px;background:${avatarColor(ticker || "?")}">${initial}</span>`;
+  if (!logoUrl) return fallback;
+  const safeUrl = escapeAttr(logoUrl);
+  // onerror swaps the broken <img> for the same fallback markup, escaping single quotes for the inline handler.
+  const fallbackForError = fallback.replace(/'/g, "\\'");
+  return `<img class="avatar-img" src="${safeUrl}" width="${size}" height="${size}" alt="" loading="lazy" onerror="this.outerHTML='${fallbackForError}'">`;
+}
+
+/* ---------------------------------------------------------------------- */
 /*  State & persistence (localStorage)                                    */
 /* ---------------------------------------------------------------------- */
 
@@ -306,16 +333,17 @@ function resetHojeState() {
   };
 }
 function loadQuotesCache() {
-  let apiKey = "", finnhubKey = "", quotes = {}, fxRateInput = "", quotesUpdatedAt = null;
+  let apiKey = "", finnhubKey = "", quotes = {}, logos = {}, fxRateInput = "", quotesUpdatedAt = null;
   try { apiKey = localStorage.getItem("pnl-twelvedata-key") || ""; } catch (_) {}
   try { finnhubKey = localStorage.getItem("pnl-finnhub-key") || ""; } catch (_) {}
   try { quotes = JSON.parse(localStorage.getItem("pnl-quotes") || "{}"); } catch (_) {}
+  try { logos = JSON.parse(localStorage.getItem("pnl-logos") || "{}"); } catch (_) {}
   try {
     const fx = JSON.parse(localStorage.getItem("pnl-fx") || "null");
     fxRateInput = typeof fx === "number" ? String(fx) : "";
   } catch (_) {}
   try { quotesUpdatedAt = localStorage.getItem("pnl-quotes-updated-at") || null; } catch (_) {}
-  return { apiKey, finnhubKey, quotes, fxRateInput, quotesUpdatedAt };
+  return { apiKey, finnhubKey, quotes, logos, fxRateInput, quotesUpdatedAt };
 }
 
 function persistQuotesCache() {
@@ -324,6 +352,7 @@ function persistQuotesCache() {
     localStorage.setItem("pnl-twelvedata-key", p.apiKey || "");
     localStorage.setItem("pnl-finnhub-key", p.finnhubKey || "");
     localStorage.setItem("pnl-quotes", JSON.stringify(p.quotes || {}));
+    localStorage.setItem("pnl-logos", JSON.stringify(p.logos || {}));
     localStorage.setItem("pnl-fx", JSON.stringify(parseNum(p.fxRateInput) || null));
     if (p.quotesUpdatedAt) localStorage.setItem("pnl-quotes-updated-at", p.quotesUpdatedAt);
   } catch (_) {}
@@ -337,6 +366,7 @@ function resetPosicoesState() {
     apiKey: cache.apiKey,
     finnhubKey: cache.finnhubKey,
     quotes: cache.quotes,
+    logos: cache.logos,
     fxRateInput: cache.fxRateInput,
     quotesUpdatedAt: cache.quotesUpdatedAt,
     quotesStatus: "idle",
@@ -400,6 +430,7 @@ async function fetchQuotes() {
 
   // 2) Stock prices via Finnhub — free plan allows 60 calls/min, so all tickers fetch
   // concurrently in one go, no batching or waiting needed.
+  const newLogos = { ...p.logos };
   const quotesPromise = (async () => {
     if (!finnhubKey) { if (tickers.length) errors.push("Sin clave de Finnhub: los precios no se actualizaron."); return; }
     await Promise.all(
@@ -417,6 +448,17 @@ async function fetchQuotes() {
         } catch (err) {
           errors.push(`No pude buscar ${sym} en Finnhub (sin conexión).`);
         }
+        // Logo only needs fetching once per ticker ever — it doesn't change.
+        if (!newLogos[sym]) {
+          try {
+            const logoUrl = `https://finnhub.io/api/v1/stock/profile2?symbol=${encodeURIComponent(sym)}&token=${encodeURIComponent(finnhubKey)}`;
+            const logoResp = await fetch(logoUrl);
+            const logoData = await logoResp.json();
+            if (logoResp.ok && typeof logoData?.logo === "string" && logoData.logo) newLogos[sym] = logoData.logo;
+          } catch (_) {
+            // no logo, the colored-initial fallback will show instead — not worth surfacing as an error.
+          }
+        }
       })
     );
   })();
@@ -424,6 +466,7 @@ async function fetchQuotes() {
   await Promise.all([fxPromise, quotesPromise]);
 
   p.quotes = newQuotes;
+  p.logos = newLogos;
   p.quotesUpdatedAt = new Date().toISOString();
   p.quotesError = errors.length ? errors : null;
   p.rows = p.rows.map((r) => ({ ...r, price: typeof newQuotes[r.ticker] === "number" ? newQuotes[r.ticker] : r.price }));
@@ -510,6 +553,7 @@ function buildChart({ type, data, valueKey, labelKey, height = 180 }) {
 /* ---------------------------------------------------------------------- */
 
 function renderTickerTape(portfolio, lastEntry) {
+  const logos = state.posicoes?.logos || {};
   const uniqueTickers = [...new Set(portfolio.map((p) => p.ticker))];
   const itemsByTicker = {};
   if (lastEntry) lastEntry.rows.forEach((r) => { itemsByTicker[r.ticker] = r.changePct; });
@@ -519,7 +563,7 @@ function renderTickerTape(portfolio, lastEntry) {
   const itemsHtml = doubled
     .map(
       (it) =>
-        `<span class="tape-item"><b>${escapeHtml(it.ticker)}</b>${
+        `<span class="tape-item">${avatarHtml(it.ticker, logos[it.ticker], 18)}<b>${escapeHtml(it.ticker)}</b>${
           typeof it.pct === "number" ? `<span class="${it.pct >= 0 ? "up" : "down"}">${fmtPct(it.pct)}</span>` : `<span class="muted">—</span>`
         }</span>`
     )
@@ -581,7 +625,7 @@ function renderHojeReviewResult() {
           : `<span class="${row.changePct >= 0 ? "up" : "down"}">${fmtPct(row.changePct)}</span>`;
       const gainCell = h.status === "result" ? `<td class="num ${row.gain >= 0 ? "up" : "down"}">${fmtBRL(row.gain)}</td>` : "";
       return `<tr>
-        <td><b>${escapeHtml(p.ticker)}</b><span class="muted small"> · ${escapeHtml(p.broker)}</span></td>
+        <td><div class="ticker-cell">${avatarHtml(p.ticker, state.posicoes?.logos?.[p.ticker], 20)}<span><b>${escapeHtml(p.ticker)}</b><span class="muted small"> · ${escapeHtml(p.broker)}</span></span></div></td>
         <td class="num">${pctCell}</td>
         ${gainCell}
       </tr>`;
@@ -841,7 +885,7 @@ function renderPosicoes() {
           : `<input class="input-cell" inputmode="decimal" data-bind="saldo" data-id="${r.id}" value="${escapeAttr(r.saldo)}">`;
       return `
       <tr>
-        <td><input class="input-cell" data-bind="ticker" data-id="${r.id}" value="${escapeAttr(r.ticker)}" placeholder="PG"></td>
+        <td><div class="ticker-cell">${avatarHtml(r.ticker, p.logos?.[r.ticker], 22)}<input class="input-cell" data-bind="ticker" data-id="${r.id}" value="${escapeAttr(r.ticker)}" placeholder="PG"></div></td>
         <td><input class="input-cell" data-bind="broker" data-id="${r.id}" value="${escapeAttr(r.broker)}" placeholder="Nomad"></td>
         <td class="num"><input class="input-cell" inputmode="decimal" data-bind="quantity" data-id="${r.id}" value="${escapeAttr(r.quantity)}"></td>
         <td class="num"><input class="input-cell" inputmode="decimal" data-bind="price" data-id="${r.id}" value="${escapeAttr(r.price)}" placeholder="0,00"></td>
