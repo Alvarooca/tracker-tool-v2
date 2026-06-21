@@ -317,6 +317,7 @@ function resetPosicoesState() {
     fxRateInput: cache.fxRateInput,
     quotesUpdatedAt: cache.quotesUpdatedAt,
     quotesStatus: "idle",
+    quotesProgressLabel: null,
     quotesError: null,
   };
 }
@@ -352,43 +353,69 @@ async function fetchQuotes() {
   p.quotesError = null;
   render();
 
-  try {
-    const tickers = [...new Set(state.portfolio.map((r) => r.ticker).filter(Boolean))];
-    const symbols = [...tickers, "USD/BRL"];
-    const url = `https://api.twelvedata.com/price?symbol=${encodeURIComponent(symbols.join(","))}&apikey=${encodeURIComponent(apiKey)}`;
-    const resp = await fetch(url);
-    const data = await resp.json();
+  const tickers = [...new Set(state.portfolio.map((r) => r.ticker).filter(Boolean))];
+  const errors = [];
 
-    if (data && data.status === "error") throw new Error(data.message || "Erro na API");
+  // 1) USD/BRL via Frankfurter — free, no key, no rate limit, doesn't touch Twelve Data's quota.
+  const fxPromise = fetch("https://api.frankfurter.app/latest?from=USD&to=BRL")
+    .then((r) => r.json())
+    .then((data) => {
+      const rate = data?.rates?.BRL;
+      if (typeof rate === "number") p.fxRateInput = String(rate);
+      else errors.push("Não consegui obter o câmbio USD/BRL.");
+    })
+    .catch(() => errors.push("Não consegui obter o câmbio USD/BRL (sem conexão)."));
 
-    // Twelve Data returns a flat {price: "..."} when only 1 symbol is requested,
-    // and {SYMBOL: {price: "..."}, ...} when 2+ symbols are requested.
-    const shaped = symbols.length === 1 ? { [symbols[0]]: data } : data;
+  // 2) Stock prices via Twelve Data — batched in groups of 8 symbols to respect the
+  // free plan's limit of 8 API credits per minute (each symbol = 1 credit per request).
+  const CHUNK_SIZE = 8;
+  const chunks = [];
+  for (let i = 0; i < tickers.length; i += CHUNK_SIZE) chunks.push(tickers.slice(i, i + CHUNK_SIZE));
 
-    const newQuotes = { ...p.quotes };
-    let fxValue = parseNum(p.fxRateInput) || null;
-    const failed = [];
+  const newQuotes = { ...p.quotes };
 
-    Object.entries(shaped || {}).forEach(([sym, val]) => {
-      if (!val || typeof val !== "object" || val.status === "error" || !val.price) {
-        failed.push(sym);
-        return;
+  const quotesPromise = (async () => {
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i];
+      if (i > 0) {
+        p.quotesProgressLabel = `Aguardando ~1 min (limite do plano gratuito)… grupo ${i + 1}/${chunks.length}`;
+        render();
+        await new Promise((r) => setTimeout(r, 61000)); // stay under the per-minute credit cap
       }
-      const num = parseFloat(val.price);
-      if (!Number.isFinite(num)) { failed.push(sym); return; }
-      if (sym === "USD/BRL") fxValue = num;
-      else newQuotes[sym] = num;
-    });
+      p.quotesProgressLabel = chunks.length > 1 ? `Buscando grupo ${i + 1}/${chunks.length}…` : null;
+      render();
+      try {
+        const url = `https://api.twelvedata.com/price?symbol=${chunk.join(",")}&apikey=${encodeURIComponent(apiKey)}`;
+        const resp = await fetch(url);
+        const data = await resp.json();
+        if (data && data.status === "error") {
+          errors.push(data.message || "Erro ao buscar preços na Twelve Data.");
+          continue;
+        }
+        const shaped = chunk.length === 1 ? { [chunk[0]]: data } : data;
+        Object.entries(shaped || {}).forEach(([sym, val]) => {
+          if (!val || typeof val !== "object" || val.status === "error" || !val.price) {
+            errors.push(`Sem cotação para ${sym}.`);
+            return;
+          }
+          const num = parseFloat(val.price);
+          if (Number.isFinite(num)) newQuotes[sym] = num;
+        });
+      } catch (err) {
+        errors.push("Não consegui buscar preços na Twelve Data (sem conexão).");
+      }
+    }
+    p.quotesProgressLabel = null;
+  })();
 
-    p.quotes = newQuotes;
-    if (fxValue) p.fxRateInput = String(fxValue);
-    p.quotesUpdatedAt = new Date().toISOString();
-    p.quotesError = failed.length ? `Sem cotação para: ${failed.join(", ")}.` : null;
-    p.rows = p.rows.map((r) => ({ ...r, price: typeof newQuotes[r.ticker] === "number" ? newQuotes[r.ticker] : r.price }));
-    persistQuotesCache();
-  } catch (err) {
-    p.quotesError = "Não consegui buscar as cotações agora. Confira sua chave de API e sua conexão.";
-  }
+  await Promise.all([fxPromise, quotesPromise]);
+
+  p.quotes = newQuotes;
+  p.quotesUpdatedAt = new Date().toISOString();
+  p.quotesError = errors.length ? errors.join(" ") : null;
+  p.rows = p.rows.map((r) => ({ ...r, price: typeof newQuotes[r.ticker] === "number" ? newQuotes[r.ticker] : r.price }));
+  persistQuotesCache();
+
   p.quotesStatus = "idle";
   render();
 }
@@ -736,7 +763,7 @@ function renderPosicoes() {
             <input class="input-cell input-fx" inputmode="decimal" data-bind="fxRate" value="${escapeAttr(p.fxRateInput)}" placeholder="0,00">
           </div>
           <button class="btn btn-ghost btn-sm" data-action="fetch-quotes" ${p.quotesStatus === "loading" ? "disabled" : ""}>
-            ${icon("refresh", 13, p.quotesStatus === "loading" ? "spin" : "")} ${p.quotesStatus === "loading" ? "Buscando…" : "Atualizar cotações"}
+            ${icon("refresh", 13, p.quotesStatus === "loading" ? "spin" : "")} ${p.quotesStatus === "loading" ? (p.quotesProgressLabel || "Buscando…") : "Atualizar cotações"}
           </button>
         </div>
         <p class="quotes-updated small muted">${p.quotesUpdatedAt ? timeAgoLabel(p.quotesUpdatedAt) : "ainda não buscado"}</p>
@@ -745,6 +772,7 @@ function renderPosicoes() {
           <a class="muted small" href="https://twelvedata.com/pricing" target="_blank" rel="noopener">Criar chave gratuita ↗</a>
         </div>
         <p class="upload-hint">O preço (US$) de cada posição é preenchido automaticamente ao atualizar as cotações, mas você pode digitar por cima se quiser. Sem preço e câmbio, o valor volta a ser editável manualmente.</p>
+        <p class="upload-hint">O plano gratuito da Twelve Data permite 8 ações por minuto. Com mais de 8 tickers diferentes, a busca continua automaticamente após esperar 1 minuto entre grupos.</p>
       </div>
 
       <div class="card">
