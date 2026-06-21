@@ -127,6 +127,9 @@ html, body { margin: 0; padding: 0; background: var(--bg-app); }
 
 .row-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
 .toolbar-row { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.period-pills { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; }
+.period-pill { flex-shrink: 0; background: transparent; border: 1px solid var(--border-input); color: var(--text-muted); font-size: 12px; font-family: 'Inter', sans-serif; font-weight: 500; padding: 6px 12px; border-radius: 20px; cursor: pointer; white-space: nowrap; }
+.period-pill.active { background: var(--accent-gold); color: var(--on-accent); border-color: var(--accent-gold); font-weight: 600; }
 .btn-sm { padding: 6px 11px; font-size: 11.5px; }
 
 .table { min-width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -623,6 +626,7 @@ function resetHistoricoState() {
     spxStatus: "idle",
     spxPct: null,
     spxError: null,
+    periodFilter: "all",
   };
 }
 
@@ -1394,8 +1398,43 @@ function renderHistorico() {
   }
 
   const sorted = [...state.history].sort((a, b) => new Date(a.date) - new Date(b.date));
+
+  const allYears = [...new Set(sorted.map((h) => new Date(h.date).getFullYear()))].sort((a, b) => b - a);
+  const currentYear = new Date().getFullYear();
+  const currentMonthKey = todayYMD().slice(0, 7);
+  const pastYears = allYears.filter((y) => y < currentYear);
+
+  const entryInPeriod = (h) => {
+    const f = hs.periodFilter;
+    if (f === "all") return true;
+    if (f === "month") return String(h.date).slice(0, 7) === currentMonthKey;
+    if (f === "year") return new Date(h.date).getFullYear() === currentYear;
+    return String(new Date(h.date).getFullYear()) === f;
+  };
+  const periodFiltered = sorted.filter(entryInPeriod);
+
+  const periodLabel = { all: "Todo", month: "este mes", year: "este año" }[hs.periodFilter] || `de ${hs.periodFilter}`;
+  const periodPillsHtml = `
+    <div class="period-pills">
+      <button class="period-pill ${hs.periodFilter === "all" ? "active" : ""}" data-action="set-period" data-period="all">Todo</button>
+      <button class="period-pill ${hs.periodFilter === "month" ? "active" : ""}" data-action="set-period" data-period="month">Este mes</button>
+      <button class="period-pill ${hs.periodFilter === "year" ? "active" : ""}" data-action="set-period" data-period="year">Este año</button>
+      ${pastYears.map((y) => `<button class="period-pill ${hs.periodFilter === String(y) ? "active" : ""}" data-action="set-period" data-period="${y}">${y}</button>`).join("")}
+    </div>`;
+
+  if (!periodFiltered.length) {
+    return `
+      <div class="stack">
+        ${periodPillsHtml}
+        <div class="card empty-state">
+          <p>No hay registros ${periodLabel === "Todo" ? "" : periodLabel}.</p>
+          <p class="muted small">Prueba otro período, o vuelve a "Todo" para ver el historial completo.</p>
+        </div>
+      </div>`;
+  }
+
   let cum = 0;
-  const chartData = sorted.map((h) => {
+  const chartData = periodFiltered.map((h) => {
     cum += h.total;
     return { date: fmtShortDate(h.date), total: h.total, cumulative: cum };
   });
@@ -1406,7 +1445,7 @@ function renderHistorico() {
   const totalSaldoForReturn = state.portfolio.reduce((s, p) => s + (parseNum(p.saldo) || 0), 0);
   const baseSaldo = totalSaldoForReturn - cum;
   const totalReturnPct = baseSaldo > 0 ? (cum / baseSaldo) * 100 : 0;
-  const firstDate = sorted.length ? fmtFullDate(sorted[0].date) : "";
+  const firstDate = periodFiltered.length ? fmtFullDate(periodFiltered[0].date) : "";
   const spxLabel = hs.spxStatus === "loading" ? "Comparando…" : "Comparar con S&P 500";
   const spxResultHtml = hs.spxError
     ? `<p class="small down" style="margin-top:8px">${escapeHtml(hs.spxError)}</p>`
@@ -1417,7 +1456,7 @@ function renderHistorico() {
     : "";
 
   const monthly = {};
-  sorted.forEach((h) => {
+  periodFiltered.forEach((h) => {
     const key = String(h.date).slice(0, 7); // YYYY-MM
     monthly[key] = (monthly[key] || 0) + h.total;
   });
@@ -1433,9 +1472,9 @@ function renderHistorico() {
       </div>`;
     })
     .join("");
-  const monthlyHtml = Object.keys(monthly).length > 1 ? `<div class="card"><h2 class="card-title">Resumen mensual</h2>${monthlyRows}</div>` : "";
+  const monthlyHtml = hs.periodFilter !== "month" && Object.keys(monthly).length > 1 ? `<div class="card"><h2 class="card-title">Resumen mensual</h2>${monthlyRows}</div>` : "";
 
-  const totalReturnHtml = sorted.length
+  const totalReturnHtml = periodFiltered.length
     ? `<div class="card total-return-card">
         <span class="muted small">Rendimiento total desde ${firstDate}</span>
         <span class="total-return-value ${cum >= 0 ? "up" : "down"}">${cum >= 0 ? "+" : ""}${fmtBRL(cum)} (${fmtPct(totalReturnPct)})</span>
@@ -1472,7 +1511,7 @@ function renderHistorico() {
       </div>`
     : "";
 
-  const rowsHtml = [...state.history]
+  const rowsHtml = [...periodFiltered]
     .reverse()
     .map(
       (h) => `
@@ -1493,6 +1532,7 @@ function renderHistorico() {
     <div class="stack">
       ${editCardHtml}
       ${importBanner}
+      ${periodPillsHtml}
       <div class="toolbar-row">
         <button class="btn btn-ghost btn-sm" data-action="import-real-history" ${hs.importStatus === "loading" ? "disabled" : ""}>
           ${icon("refresh", 13, hs.importStatus === "loading" ? "spin" : "")} ${importBtnLabel}
@@ -2057,6 +2097,7 @@ function handleAction(action, el) {
     case "export-csv": exportCsv(); break;
     case "edit-entry": startEditEntry(id); break;
     case "compare-spx": compareSpx(); break;
+    case "set-period": state.historico.periodFilter = el.dataset.period; render(); break;
     case "cancel-entry-edit": cancelEditEntry(); break;
     case "save-entry-edit": saveEntryEdit(); break;
     case "clear-history": clearHistoryAction(); break;
