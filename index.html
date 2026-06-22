@@ -178,6 +178,8 @@ html, body { margin: 0; padding: 0; background: var(--bg-app); }
 .tx-form-row .input-cell { flex: 1; min-width: 0; }
 .tx-date { width: 100%; color-scheme: dark; }
 [data-theme="light"] .tx-date { color-scheme: light; }
+.import-date-row .tx-ticker-wrap { display: flex; flex-direction: column; gap: 4px; }
+.import-range-card { padding-bottom: 14px; }
 .tx-ticker-wrap { position: relative; flex: 1; min-width: 0; }
 .ticker-search-results { position: absolute; top: 100%; left: 0; right: 0; z-index: 20; background: var(--bg-card); border: 1px solid var(--border-input); border-radius: 8px; margin-top: 4px; overflow: hidden; max-height: 220px; overflow-y: auto; }
 .ticker-search-item { display: flex; flex-direction: column; gap: 1px; width: 100%; text-align: left; background: transparent; border: none; border-bottom: 1px solid var(--border); color: var(--text-primary); padding: 8px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; cursor: pointer; }
@@ -625,6 +627,10 @@ async function fetchQuotes() {
   render();
 }
 function resetHistoricoState() {
+  const earliestTx = state.transactions.length
+    ? state.transactions.reduce((min, t) => (t.date < min ? t.date : min), state.transactions[0].date)
+    : null;
+  const defaultFrom = earliestTx ? earliestTx.slice(0, 10) : new Date(Date.now() - 14 * 86400000).toISOString().slice(0, 10);
   state.historico = {
     confirmClear: false,
     importStatus: "idle",
@@ -638,6 +644,8 @@ function resetHistoricoState() {
     spxPct: null,
     spxError: null,
     periodFilter: "all",
+    importFromDate: defaultFrom,
+    importToDate: todayYMD(),
   };
 }
 
@@ -1387,7 +1395,18 @@ function savePositions() {
 
 function renderHistorico() {
   const hs = state.historico;
-  const importBtnLabel = hs.importStatus === "loading" ? (hs.importProgressLabel || "Buscando…") : "Importar historial real (14 días)";
+  const importBtnLabel = hs.importStatus === "loading" ? (hs.importProgressLabel || "Buscando…") : "Importar histórico real";
+  const importDateRangeHtml = `
+    <div class="tx-form-row import-date-row">
+      <div class="tx-ticker-wrap">
+        <span class="muted small">Desde</span>
+        <input class="input-cell tx-date" type="date" data-bind="importFromDate" value="${escapeAttr(hs.importFromDate)}" style="text-align:left">
+      </div>
+      <div class="tx-ticker-wrap">
+        <span class="muted small">Hasta</span>
+        <input class="input-cell tx-date" type="date" data-bind="importToDate" value="${escapeAttr(hs.importToDate)}" style="text-align:left">
+      </div>
+    </div>`;
   const importBanner = hs.importError
     ? `<div class="banner banner-warn">${icon("alert-triangle", 15)} ${
         hs.importError.length > 1 ? `<ul class="error-list">${hs.importError.map((e) => `<li>${escapeHtml(e)}</li>`).join("")}</ul>` : escapeHtml(hs.importError[0])
@@ -1402,6 +1421,7 @@ function renderHistorico() {
         <p>Todavía no hay resultados guardados.</p>
         <p class="muted small">Calcula el resultado de hoy en la pestaña "Hoy" y guárdalo para empezar el historial, importa los últimos días reales, o prueba la app con datos ficticios.</p>
         ${importBanner}
+        ${importDateRangeHtml}
         <button class="btn btn-primary" style="margin-top:14px" data-action="import-real-history" ${hs.importStatus === "loading" ? "disabled" : ""}>
           ${icon("refresh", 15, hs.importStatus === "loading" ? "spin" : "")} ${importBtnLabel}
         </button>
@@ -1556,10 +1576,16 @@ function renderHistorico() {
       ${editCardHtml}
       ${importBanner}
       ${periodPillsHtml}
+      <div class="card import-range-card">
+        <h2 class="card-title">Importar histórico real</h2>
+        ${importDateRangeHtml}
+        <div class="row-actions">
+          <button class="btn btn-primary btn-sm" data-action="import-real-history" ${hs.importStatus === "loading" ? "disabled" : ""}>
+            ${icon("refresh", 13, hs.importStatus === "loading" ? "spin" : "")} ${importBtnLabel}
+          </button>
+        </div>
+      </div>
       <div class="toolbar-row">
-        <button class="btn btn-ghost btn-sm" data-action="import-real-history" ${hs.importStatus === "loading" ? "disabled" : ""}>
-          ${icon("refresh", 13, hs.importStatus === "loading" ? "spin" : "")} ${importBtnLabel}
-        </button>
         <button class="btn btn-ghost btn-sm" data-action="add-demo">${icon("sparkles", 13)} Generar más datos de prueba</button>
         <button class="btn btn-ghost btn-sm" data-action="export-csv">${icon("download", 13)} Exportar CSV</button>
         <button class="btn btn-ghost btn-sm" data-action="clear-history">${icon("trash", 13)} ${hs.confirmClear ? "¿Confirmar borrado?" : "Borrar historial"}</button>
@@ -1599,6 +1625,15 @@ async function importRealHistory() {
     render();
     return;
   }
+  const fromDate = h.importFromDate || new Date(Date.now() - 14 * 86400000).toISOString().slice(0, 10);
+  const toDate = h.importToDate || todayYMD();
+  if (new Date(fromDate) > new Date(toDate)) {
+    h.importError = ["La fecha \"desde\" no puede ser posterior a la fecha \"hasta\"."];
+    render();
+    return;
+  }
+  h.fromDate = fromDate;
+  h.toDate = toDate;
   h.importStatus = "loading";
   h.importError = null;
   h.importMessage = null;
@@ -1631,7 +1666,7 @@ async function importRealHistory() {
       h.importProgressLabel = chunks.length > 1 ? `Buscando histórico — grupo ${i + 1}/${chunks.length}…` : "Buscando histórico…";
       render();
       try {
-        const url = `https://api.twelvedata.com/time_series?symbol=${chunk.join(",")}&interval=1day&outputsize=15&apikey=${encodeURIComponent(twelveKey)}`;
+        const url = `https://api.twelvedata.com/time_series?symbol=${chunk.join(",")}&interval=1day&start_date=${h.fromDate}&end_date=${h.toDate}&apikey=${encodeURIComponent(twelveKey)}`;
         const resp = await fetch(url);
         const data = await resp.json();
         if (data && data.status === "error") {
@@ -2189,6 +2224,10 @@ root.addEventListener("input", (e) => {
     state.historico.editReviewMap[id] = el.value;
   } else if (bind === "editFx") {
     state.historico.editFxInput = el.value;
+  } else if (bind === "importFromDate") {
+    state.historico.importFromDate = el.value;
+  } else if (bind === "importToDate") {
+    state.historico.importToDate = el.value;
   } else if (bind === "paste") {
     state.hoje.pasteText = el.value;
     const btn = document.querySelector('[data-action="parse-pasted"]');
