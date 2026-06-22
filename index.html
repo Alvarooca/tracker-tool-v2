@@ -1704,15 +1704,21 @@ async function importRealHistory() {
 
   // Day-over-day % change, computed within each series' own trading calendar.
   const tickerChangePct = {};
+  const tickerPrevDate = {};
   Object.entries(tickerCloses).forEach(([sym, closesByDate]) => {
     const dates = Object.keys(closesByDate).sort();
     const pctByDate = {};
+    const prevByDate = {};
     for (let i = 1; i < dates.length; i++) {
       const prev = closesByDate[dates[i - 1]];
       const curr = closesByDate[dates[i]];
-      if (prev) pctByDate[dates[i]] = ((curr - prev) / prev) * 100;
+      if (prev) {
+        pctByDate[dates[i]] = ((curr - prev) / prev) * 100;
+        prevByDate[dates[i]] = dates[i - 1];
+      }
     }
     tickerChangePct[sym] = pctByDate;
+    tickerPrevDate[sym] = prevByDate;
   });
 
   const fxDates = Object.keys(fxRates).sort();
@@ -1730,18 +1736,72 @@ async function importRealHistory() {
   const existingDates = new Set(state.history.map((e) => String(e.date).slice(0, 10)));
   const totalSaldo = state.portfolio.reduce((s, p) => s + parseNum(p.saldo), 0);
 
+  // Reconstruct how many shares of a ticker were actually held on a given date, from the
+  // saved buy/sell transactions — so old imported days reflect the position size you had
+  // BACK THEN, not your current (likely larger) position. Falls back to today's saldo for
+  // tickers with no transaction history recorded.
+  const txByTicker = {};
+  state.transactions.forEach((t) => {
+    (txByTicker[t.ticker] = txByTicker[t.ticker] || []).push(t);
+  });
+  const historicalQty = (ticker, dateStr) => {
+    const txs = txByTicker[ticker];
+    if (!txs) return null;
+    const cutoff = new Date(`${dateStr}T23:59:59`).getTime();
+    let qty = 0;
+    let any = false;
+    txs.forEach((t) => {
+      if (new Date(t.date).getTime() > cutoff) return;
+      any = true;
+      qty += t.type === "buy" ? t.qty : -t.qty;
+    });
+    return any ? qty : 0;
+  };
+  const historicalValueBrl = (p, dateStr) => {
+    const qty = historicalQty(p.ticker, dateStr);
+    const priceUsd = tickerCloses[p.ticker]?.[dateStr];
+    const fx = fxRates[dateStr];
+    if (qty === null || !priceUsd || !fx) return null; // can't reconstruct, caller should fall back
+    return qty * priceUsd * fx;
+  };
+
+  // When the same ticker is split across more than one row/broker, divide the reconstructed
+  // historical quantity between them using each row's share of today's quantity for that
+  // ticker — otherwise every row sharing a ticker would each get the FULL historical amount,
+  // double (or more) counting the gain.
+  const tickerTotalQtyToday = {};
+  state.portfolio.forEach((p) => {
+    tickerTotalQtyToday[p.ticker] = (tickerTotalQtyToday[p.ticker] || 0) + parseNum(p.quantity);
+  });
+  const rowShareOfTicker = (p) => {
+    const total = tickerTotalQtyToday[p.ticker];
+    if (!total) return 1; // only row for this ticker (or no current quantity on file) — take it all
+    return parseNum(p.quantity) / total;
+  };
+
   const newEntries = [...allDates]
     .filter((d) => !existingDates.has(d) && !isNonTradingDay(d))
     .sort()
     .map((d) => {
+      let totalSaldoForDate = 0;
+      let hadAnyReconstruction = false;
       const rows = state.portfolio.map((p) => {
         const pct = tickerChangePct[p.ticker]?.[d] ?? 0;
-        const saldo = parseNum(p.saldo);
+        const prevDate = tickerPrevDate[p.ticker]?.[d];
+        let saldo = parseNum(p.saldo); // fallback: today's value
+        if (prevDate) {
+          const histValue = historicalValueBrl(p, prevDate);
+          if (histValue !== null) {
+            saldo = histValue * rowShareOfTicker(p);
+            hadAnyReconstruction = true;
+          }
+        }
+        totalSaldoForDate += saldo;
         return { id: p.id, ticker: p.ticker, broker: p.broker, saldo, changePct: pct, gain: (saldo * pct) / 100 };
       });
       const priceTotal = rows.reduce((s, r) => s + r.gain, 0);
       const fxPct = fxChangePct[d] ?? 0;
-      const fxGain = (totalSaldo * fxPct) / 100;
+      const fxGain = ((hadAnyReconstruction ? totalSaldoForDate : totalSaldo) * fxPct) / 100;
       return { id: `real-${d}`, date: `${d}T12:00:00`, rows, fxPct, fxGain, priceTotal, total: priceTotal + fxGain };
     });
 
@@ -1952,6 +2012,19 @@ function importPurchasesFile(file) {
       // sort chronologically so sells reduce the running average cost correctly, oldest first.
       txs.sort((a, b) => new Date(a[idx.date]) - new Date(b[idx.date]));
 
+      // Some exports show Qty as a plain decimal (e.g. "80.96"). Others show it as an
+      // integer count of THOUSANDTHS of a share, with commas only as thousands grouping
+      // (e.g. "1,070" meaning 1.070 shares, "977" meaning 0.977 shares — no literal decimal
+      // point anywhere in the column). Detect which convention this file uses by checking
+      // whether any Qty value in the whole file contains a ".".
+      const qtyHasDecimalPoint = txs.some((cols) => String(cols[idx.qty] || "").includes("."));
+      const parseQty = (raw) => {
+        const s = String(raw ?? "").trim();
+        if (qtyHasDecimalPoint) return parseNum(s);
+        const intVal = parseFloat(s.replace(/,/g, ""));
+        return Number.isFinite(intVal) ? intVal / 1000 : 0;
+      };
+
       // Keep a persisted record of every transaction (deduped), so the app remembers how far
       // back your investing history goes — used e.g. to build the year filters in Historial.
       const txKey = (t) => `${t.ticker}|${t.date}|${t.type}|${t.qty.toFixed(4)}|${t.price.toFixed(4)}`;
@@ -1964,7 +2037,7 @@ function importPurchasesFile(file) {
         if (type !== "buy" && type !== "sell") return;
         const dateRaw = cols[idx.date] || "";
         const date = dateRaw ? new Date(dateRaw).toISOString() : new Date().toISOString();
-        const rec = { ticker: sym, date, type, qty: parseNum(cols[idx.qty]), price: parseNum(cols[idx.price]) };
+        const rec = { ticker: sym, date, type, qty: parseQty(cols[idx.qty]), price: parseNum(cols[idx.price]) };
         const key = txKey(rec);
         if (!existingKeys.has(key)) {
           existingKeys.add(key);
@@ -1980,7 +2053,7 @@ function importPurchasesFile(file) {
         const sym = rawSym.includes(":") ? rawSym.split(":").pop() : rawSym;
         if (!sym) return;
         const type = (cols[idx.type] || "").trim().toLowerCase();
-        const q = parseNum(cols[idx.qty]);
+        const q = parseQty(cols[idx.qty]);
         const pr = parseNum(cols[idx.price]);
         qty[sym] = qty[sym] || 0;
         cost[sym] = cost[sym] || 0;
