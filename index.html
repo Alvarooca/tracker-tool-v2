@@ -1818,15 +1818,12 @@ async function importRealHistory() {
       const rows = state.portfolio.map((p) => {
         const prevDate = tickerPrevDate[p.ticker]?.[d];
         const priceAtPrev = prevDate ? tickerCloses[p.ticker]?.[prevDate] : null;
-        const fxAtPrev = prevDate ? fxRates[prevDate] : null;
-        const qtyStart = qtyForRowAtDate(p, prevDate || d);
+        const qtyStart = Math.max(0, qtyForRowAtDate(p, prevDate || d));
         const pct = tickerChangePct[p.ticker]?.[d] ?? 0;
-        let saldo;
-        if (priceAtPrev != null && fxAtPrev != null) {
-          saldo = qtyStart * priceAtPrev * fxAtPrev;
-        } else {
-          saldo = parseNum(p.saldo);
-        }
+        // Si falta precio o cambio histórico para ese día, no hay forma confiable de
+        // reconstruir el saldo: se omite esa posición ese día (saldo 0) en vez de usar
+        // el saldo ACTUAL (mucho mayor), que distorsionaría todo el cálculo acumulado.
+        const saldo = priceAtPrev != null && fxAtPrev != null ? qtyStart * priceAtPrev * fxAtPrev : 0;
         totalSaldoStartOfDay += saldo;
         return { id: p.id, ticker: p.ticker, broker: p.broker, saldo, changePct: pct, gain: (saldo * pct) / 100 };
       });
