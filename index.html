@@ -2109,7 +2109,6 @@ function importPurchasesFile(file) {
         const q = splitAdjustQty(sym, parseQty(cols[idx.qty]), dateStr);
         const pr = parseNum(cols[idx.price]) / (q ? q / parseQty(cols[idx.qty]) || 1 : 1);
         const fxAtTx = idx.fx !== -1 ? parseNum(cols[idx.fx]) : 0;
-        const fxAtTx = fxFromCsv > 0 ? fxFromCsv : fxRateNear(fxHistory, dateStr);
         qty[sym] = qty[sym] || 0;
         cost[sym] = cost[sym] || 0;
         costBrl[sym] = costBrl[sym] || 0;
