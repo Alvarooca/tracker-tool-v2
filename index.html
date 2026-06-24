@@ -264,22 +264,6 @@ const fmtFullDate = (iso) => {
 
 const uid = () => `row-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
 
-// Splits manuales: ratio = cuántas acciones nuevas por cada acción vieja, vigentes desde
-// splitDate (inclusive). Los precios de la API ya vienen ajustados por split, así que hay
-// que multiplicar cantidades/dividir costos de transacciones ANTERIORES al split.
-const STOCK_SPLITS = {
-  ARKB: [{ date: "2025-06-13", ratio: 3 }],
-};
-const splitAdjustQty = (ticker, qty, dateStr) => {
-  const splits = STOCK_SPLITS[ticker];
-  if (!splits) return qty;
-  let adjusted = qty;
-  splits.forEach((s) => {
-    if (dateStr < s.date) adjusted *= s.ratio;
-  });
-  return adjusted;
-};
-
 const isWeekend = () => {
   const day = new Date().getDay();
   return day === 0 || day === 6;
@@ -313,6 +297,40 @@ const isNonTradingDay = (ymd) => {
   const day = d.getDay();
   return day === 0 || day === 6 || US_MARKET_HOLIDAYS.has(ymd);
 };
+
+// Hora de Brasil (America/Sao_Paulo), calculada con Intl para que sea correcta sin importar
+// la zona horaria del dispositivo del usuario. Se usa para el guardado automático del
+// resultado diario después de las 20:00 y para decidir qué entrada del historial es "hoy".
+const dateToBrazilYMD = (iso) => {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(iso));
+  const map = {};
+  parts.forEach((p) => (map[p.type] = p.value));
+  return `${map.year}-${map.month}-${map.day}`;
+};
+
+const brazilTodayYMD = () => dateToBrazilYMD(new Date().toISOString());
+
+const brazilHourMinute = () => {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Sao_Paulo",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date());
+  const map = {};
+  parts.forEach((p) => (map[p.type] = p.value));
+  let hour = parseInt(map.hour, 10);
+  if (hour === 24) hour = 0; // algunas implementaciones de Intl devuelven "24" para la medianoche
+  return { hour, minute: parseInt(map.minute, 10) };
+};
+
+const AUTO_SAVE_HOUR_BRAZIL = 20; // 8 PM hora de Brasil
+const isPastAutoSaveTime = () => brazilHourMinute().hour >= AUTO_SAVE_HOUR_BRAZIL;
 
 const escapeHtml = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const escapeAttr = (s) => escapeHtml(s).replace(/"/g, "&quot;");
@@ -473,6 +491,38 @@ function persistHistory() {
 function resetHojeState() {
   let quickSave = false;
   try { quickSave = localStorage.getItem("pnl-quick-save") === "1"; } catch (_) {}
+
+  // Si hoy (según la hora de Brasil) ya tiene un registro en el historial — guardado
+  // automáticamente después de las 20:00, o guardado a mano antes — se muestra esa
+  // información directamente en vez de la pantalla "idle". Así la variación por activo
+  // se mantiene visible siempre, incluso al cambiar de pestaña o recargar la app, y solo
+  // cambia cuando se vuelve a tocar "Buscar variación automáticamente".
+  const todayEntry = state.history.find((e) => dateToBrazilYMD(e.date) === brazilTodayYMD());
+  if (todayEntry) {
+    const reviewMap = {};
+    todayEntry.rows.forEach((r) => { reviewMap[r.id] = String(r.changePct); });
+    state.hoje = {
+      status: "saved",
+      error: null,
+      reviewMap,
+      fxPctInput: String(todayEntry.fxPct),
+      result: {
+        rows: todayEntry.rows,
+        priceTotal: todayEntry.priceTotal,
+        fxPct: todayEntry.fxPct,
+        fxGain: todayEntry.fxGain,
+        total: todayEntry.total,
+      },
+      updateSaldo: false,
+      pasteText: "",
+      fetchStatus: "idle",
+      fetchProgressLabel: null,
+      quickSave,
+      savedAt: todayEntry.date,
+    };
+    return;
+  }
+
   state.hoje = {
     status: "idle",
     error: null,
@@ -484,6 +534,7 @@ function resetHojeState() {
     fetchStatus: "idle",
     fetchProgressLabel: null,
     quickSave,
+    savedAt: null,
   };
 }
 function loadQuotesCache() {
@@ -837,6 +888,7 @@ function renderHoje() {
       <div class="card upload-card">
         ${h.error ? `<div class="banner banner-warn">${icon("alert-triangle", 15)} ${escapeHtml(h.error)}</div>` : ""}
         ${isMarketClosedToday() ? `<div class="banner banner-warn">${icon("alert-triangle", 15)} Hoy ${marketClosedReason()}: el mercado está cerrado. La búsqueda automática traería el último cierre disponible, no el de hoy.</div>` : ""}
+        <div class="banner banner-ok">${icon("check-circle", 15)} Si no registras el día a mano, a partir de las ${AUTO_SAVE_HOUR_BRAZIL}:00 (hora de Brasil) la app calcula y guarda el resultado de hoy automáticamente, sin necesidad de tocar nada.</div>
         ${icon("camera", 28, "muted")}
         <p class="upload-text">Registra la variación de hoy buscando las cotizaciones automáticamente, pegando los números que ya tienes, o llenando manualmente.</p>
         <button class="btn btn-primary" data-action="fetch-live-day-change" ${h.fetchStatus === "loading" ? "disabled" : ""}>
@@ -851,18 +903,11 @@ function renderHoje() {
         <button class="btn btn-ghost" data-action="start-manual">${icon("pencil", 15)} Llenar manualmente</button>
         <label class="checkbox-row">
           <input type="checkbox" data-bind="quickSave" ${h.quickSave ? "checked" : ""}>
-          Guardar automáticamente después de buscar (sin revisar)
+          Guardar automáticamente en el historial después de buscar
         </label>
       </div>`;
-  } else if (h.status === "review" || h.status === "result") {
+  } else if (h.status === "review" || h.status === "result" || h.status === "saved") {
     inner = renderHojeReviewResult();
-  } else if (h.status === "saved") {
-    inner = `
-      <div class="card center-card">
-        ${icon("check-circle", 28, "up")}
-        <p>Resultado de hoy guardado en el historial.</p>
-        <button class="btn btn-primary" data-action="new-entry">Nuevo registro</button>
-      </div>`;
   }
 
   return `<div class="stack">${inner}</div>`;
@@ -871,6 +916,7 @@ function renderHoje() {
 function renderHojeReviewResult() {
   const h = state.hoje;
   const portfolio = [...state.portfolio].sort((a, b) => parseNum(b.saldo) - parseNum(a.saldo));
+  const showResultColumns = h.status === "result" || h.status === "saved";
 
   const rowsHtml = portfolio
     .map((p) => {
@@ -879,7 +925,7 @@ function renderHojeReviewResult() {
         h.status === "review"
           ? `<input class="input-cell" inputmode="decimal" data-bind="review" data-id="${p.id}" value="${escapeAttr(h.reviewMap[p.id] ?? "0")}">`
           : `<span class="${row.changePct >= 0 ? "up" : "down"}">${fmtPct(row.changePct)}</span>`;
-      const gainCell = h.status === "result" ? `<td class="num ${row.gain >= 0 ? "up" : "down"}">${fmtBRL(row.gain)}</td>` : "";
+      const gainCell = showResultColumns ? `<td class="num ${row.gain >= 0 ? "up" : "down"}">${fmtBRL(row.gain)}</td>` : "";
       return `<tr>
         <td><div class="ticker-cell">${avatarHtml(p.ticker, state.posicoes?.logos?.[p.ticker], 20)}<span><b>${escapeHtml(p.ticker)}</b><span class="muted small"> · ${escapeHtml(p.broker)}</span></span></div></td>
         <td class="num">${pctCell}</td>
@@ -892,14 +938,14 @@ function renderHojeReviewResult() {
     h.status === "review"
       ? `<input class="input-cell" inputmode="decimal" data-bind="fx" value="${escapeAttr(h.fxPctInput)}">`
       : `<span class="${h.result.fxPct >= 0 ? "up" : "down"}">${fmtPct(h.result.fxPct)}</span>`;
-  const fxGainCell = h.status === "result" ? `<td class="num ${h.result.fxGain >= 0 ? "up" : "down"}">${fmtBRL(h.result.fxGain)}</td>` : "";
+  const fxGainCell = showResultColumns ? `<td class="num ${h.result.fxGain >= 0 ? "up" : "down"}">${fmtBRL(h.result.fxGain)}</td>` : "";
 
   const errorBanner = h.error ? `<div class="banner banner-warn">${icon("alert-triangle", 15)} ${escapeHtml(h.error)}</div>` : "";
-  const headerExtra = h.status === "result" ? `<button class="icon-btn" data-action="edit-review" title="Editar valores">${icon("pencil", 14)}</button>` : "";
+  const headerExtra = showResultColumns ? `<button class="icon-btn" data-action="edit-review" title="Editar valores">${icon("pencil", 14)}</button>` : "";
 
   const tableHtml = `
     <div class="table-scroll"><table class="table">
-      <thead><tr><th>Activo</th><th class="num">% día</th>${h.status === "result" ? '<th class="num">Resultado</th>' : ""}</tr></thead>
+      <thead><tr><th>Activo</th><th class="num">% día</th>${showResultColumns ? '<th class="num">Resultado</th>' : ""}</tr></thead>
       <tbody>
         ${rowsHtml}
         <tr class="row-fx">
@@ -917,7 +963,7 @@ function renderHojeReviewResult() {
         <button class="btn btn-ghost" data-action="cancel-review">${icon("x", 15)} Cancelar</button>
         <button class="btn btn-primary" data-action="compute">Calcular resultado</button>
       </div>`;
-  } else {
+  } else if (h.status === "result") {
     const r = h.result;
     footer = `
       <div class="summary">
@@ -932,6 +978,21 @@ function renderHojeReviewResult() {
       <div class="row-actions">
         <button class="btn btn-ghost" data-action="discard-result">Descartar</button>
         <button class="btn btn-primary" data-action="save-history">${icon("save", 15)} Guardar en el historial</button>
+      </div>`;
+  } else if (h.status === "saved") {
+    const r = h.result;
+    const savedLabel = h.savedAt ? `Guardado en el historial · ${timeAgoLabel(h.savedAt)}` : "Guardado en el historial.";
+    footer = `
+      <div class="summary">
+        <div class="summary-line"><span>Variación por precios</span><span class="${r.priceTotal >= 0 ? "up" : "down"}">${fmtBRL(r.priceTotal)}</span></div>
+        <div class="summary-line"><span>Efecto dólar (${fmtPct(r.fxPct)})</span><span class="${r.fxGain >= 0 ? "up" : "down"}">${fmtBRL(r.fxGain)}</span></div>
+        <div class="summary-line summary-total"><span>Total estimado</span><span class="${r.total >= 0 ? "up" : "down"}">${fmtBRL(r.total)}</span></div>
+      </div>
+      <div class="banner banner-ok">${icon("check-circle", 15)} ${escapeHtml(savedLabel)} Esta información se mantiene visible y solo cambia si tocas "Actualizar variación" (eso no modifica el historial; el historial solo se actualiza automáticamente a las ${AUTO_SAVE_HOUR_BRAZIL}:00 hora de Brasil).</div>
+      <div class="row-actions">
+        <button class="btn btn-ghost" data-action="fetch-live-day-change" ${h.fetchStatus === "loading" ? "disabled" : ""}>
+          ${icon("refresh", 15, h.fetchStatus === "loading" ? "spin" : "")} ${h.fetchStatus === "loading" ? (h.fetchProgressLabel || "Buscando…") : "Actualizar variación"}
+        </button>
       </div>`;
   }
 
@@ -953,8 +1014,13 @@ function startManual() {
   render();
 }
 
-async function fetchLiveDayChange() {
+async function fetchLiveDayChange(opts = {}) {
   const h = state.hoje;
+  // Solo se guarda/sobrescribe el historial cuando lo dispara el proceso automático de las
+  // 20:00 (opts.autoSave) o cuando el usuario activó el checkbox "Guardar automáticamente".
+  // Tocar el botón "Actualizar variación" a mano SOLO refresca lo que se ve en pantalla — no
+  // toca el historial, aunque hoy ya tuviera un registro guardado.
+  const autoSave = !!opts.autoSave;
   const finnhubKey = (state.posicoes.finnhubKey || "").trim();
   const twelveKey = (state.posicoes.apiKey || "").trim();
   if (!finnhubKey && !twelveKey) {
@@ -1026,12 +1092,11 @@ async function fetchLiveDayChange() {
   h.fxPctInput = fxPct !== null ? String(fxPct) : "0";
   h.error = errors.length ? errors.join(" ") : null;
   h.fetchStatus = "idle";
-  h.status = "review";
-  if (h.quickSave && !h.error) {
-    compute();
+  // Al buscar automáticamente ya se muestra el resultado calculado por activo de inmediato
+  // (sin un paso intermedio de revisión manual) — sigue pudiéndose ajustar con el lápiz "Editar valores".
+  compute();
+  if ((h.quickSave || autoSave) && !h.error) {
     saveHistoryAction();
-  } else {
-    render();
   }
 }
 
@@ -1083,16 +1148,29 @@ function compute() {
 function saveHistoryAction() {
   const h = state.hoje;
   if (!h.result) return;
+  const nowIso = new Date().toISOString();
   const entry = {
     id: uid(),
-    date: new Date().toISOString(),
+    date: nowIso,
     rows: h.result.rows,
     fxPct: h.result.fxPct,
     fxGain: h.result.fxGain,
     priceTotal: h.result.priceTotal,
     total: h.result.total,
   };
-  state.history = [...state.history, entry];
+
+  // Si ya existe un registro de hoy (hora de Brasil) — por ejemplo el guardado automático
+  // de las 20:00 — se reemplaza en vez de crear un duplicado. Así, tocar de nuevo el botón
+  // "Buscar variación automáticamente"/"Actualizar variación" el mismo día actualiza el
+  // registro existente en lugar de acumular varias entradas para el mismo día.
+  const todayBZ = brazilTodayYMD();
+  const existingIdx = state.history.findIndex((e) => dateToBrazilYMD(e.date) === todayBZ);
+  if (existingIdx !== -1) {
+    entry.id = state.history[existingIdx].id;
+    state.history = [...state.history.slice(0, existingIdx), entry, ...state.history.slice(existingIdx + 1)];
+  } else {
+    state.history = [...state.history, entry];
+  }
   persistHistory();
 
   if (h.updateSaldo) {
@@ -1105,6 +1183,7 @@ function saveHistoryAction() {
     persistPortfolio();
   }
   h.status = "saved";
+  h.savedAt = nowIso;
   render();
 }
 
@@ -1152,9 +1231,6 @@ function renderUnrealized(rows) {
 
   let totalCostUsd = 0;
   let totalNowUsd = 0;
-  let totalCostBrl = 0;
-  let totalNowBrl = 0;
-  let anyBrlGap = false;
   const itemsHtml = withCost
     .map((r) => {
       const price = parseNum(r.price);
@@ -1166,33 +1242,25 @@ function renderUnrealized(rows) {
       totalNowUsd += nowValueUsd;
       const gainUsd = nowValueUsd - costBasisUsd;
       const pct = costBasisUsd ? (gainUsd / costBasisUsd) * 100 : 0;
-      const hasCostBrl = typeof r.avgCostBrl === "number" && Number.isFinite(r.avgCostBrl);
-      const costBasisBrl = hasCostBrl ? r.avgCostBrl * qty : fx ? costBasisUsd * fx : null;
-      const nowValueBrl = hasPrice && fx ? price * qty * fx : null;
-      const gainBrl = costBasisBrl !== null && nowValueBrl !== null ? nowValueBrl - costBasisBrl : null;
-      const pctDisplay = gainBrl !== null && costBasisBrl ? (gainBrl / costBasisBrl) * 100 : pct;
-      if (gainBrl !== null) { totalCostBrl += costBasisBrl; totalNowBrl += nowValueBrl; }
-      else if (hasPrice) anyBrlGap = true;
+      const gainBrl = fx ? gainUsd * fx : null;
       return `<tr>
         <td><div class="ticker-cell">${avatarHtml(r.ticker, state.posicoes?.logos?.[r.ticker], 20)}<span><b>${escapeHtml(r.ticker)}</b></span></div></td>
         <td class="num small">$${r.avgCost.toFixed(2)}</td>
         <td class="num small">${hasPrice ? "$" + price.toFixed(2) : "—"}</td>
-        <td class="num ${hasPrice ? (gainUsd >= 0 ? "up" : "down") : "muted"}"><b>${hasPrice ? (gainBrl !== null ? fmtBRL(gainBrl) : `US$ ${gainUsd.toFixed(2)}`) : "—"}</b>${hasPrice ? `<br><span class="small">${fmtPct(pctDisplay)}</span>` : ""}</td>
+        <td class="num ${hasPrice ? (gainUsd >= 0 ? "up" : "down") : "muted"}"><b>${hasPrice ? (gainBrl !== null ? fmtBRL(gainBrl) : `US$ ${gainUsd.toFixed(2)}`) : "—"}</b>${hasPrice ? `<br><span class="small">${fmtPct(pct)}</span>` : ""}</td>
       </tr>`;
     })
     .join("");
 
   const totalGainUsd = totalNowUsd - totalCostUsd;
   const totalPct = totalCostUsd ? (totalGainUsd / totalCostUsd) * 100 : 0;
-  const totalGainBrl = totalCostBrl ? totalNowBrl - totalCostBrl : fx ? totalGainUsd * fx : null;
-  const totalPctBrl = totalCostBrl ? ((totalNowBrl - totalCostBrl) / totalCostBrl) * 100 : totalPct;
+  const totalGainBrl = fx ? totalGainUsd * fx : null;
 
   return `<div class="card">
     <div class="card-title-row">
       <h2 class="card-title">Ganancia/pérdida no realizada</h2>
-      <span class="${(totalGainBrl ?? totalGainUsd) >= 0 ? "up" : "down"} small"><b>${totalGainBrl !== null ? fmtBRL(totalGainBrl) : `US$ ${totalGainUsd.toFixed(2)}`} (${fmtPct(totalCostBrl ? totalPctBrl : totalPct)})</b></span>
+      <span class="${totalGainUsd >= 0 ? "up" : "down"} small"><b>${totalGainBrl !== null ? fmtBRL(totalGainBrl) : `US$ ${totalGainUsd.toFixed(2)}`} (${fmtPct(totalPct)})</b></span>
     </div>
-    ${anyBrlGap ? `<p class="muted small">Importa tu historial de compras/ventas (CSV: columnas symbol, date, type, qty, price, y opcionalmente fx con el cambio USD/BRL exacto de esa operación) para calcular el precio promedio de compra de cada activo y ver la ganancia no realizada.</p>` : ""}
     <p class="muted small">Compara el precio promedio de compra (importado) con el precio actual de cada activo, en dólares. ${fx ? "Convertido a reales con el cambio configurado." : "Configura el cambio USD/BRL arriba para verlo también en reales."}</p>
     <div class="table-scroll"><table class="table">
       <thead><tr><th>Activo</th><th class="num">Compra</th><th class="num">Actual</th><th class="num">Ganancia</th></tr></thead>
@@ -1763,16 +1831,17 @@ async function importRealHistory() {
   const existingDates = new Set(state.history.map((e) => String(e.date).slice(0, 10)));
   const totalSaldo = state.portfolio.reduce((s, p) => s + parseNum(p.saldo), 0);
 
-// Reconstruct how many shares of a ticker were held on a given date, from saved
-  // buy/sell transactions. Falls back to the CURRENT quantity (assuming the position was
-  // held unchanged) only when there's no transaction history at all for that ticker.
- const txByTicker = {};
+  // Reconstruct how many shares of a ticker were actually held on a given date, from the
+  // saved buy/sell transactions — so old imported days reflect the position size you had
+  // BACK THEN, not your current (likely larger) position. Falls back to today's saldo for
+  // tickers with no transaction history recorded.
+  const txByTicker = {};
   state.transactions.forEach((t) => {
     (txByTicker[t.ticker] = txByTicker[t.ticker] || []).push(t);
   });
   const historicalQty = (ticker, dateStr) => {
     const txs = txByTicker[ticker];
-    if (!txs || !txs.length) return null;
+    if (!txs) return null;
     const cutoff = new Date(`${dateStr}T23:59:59`).getTime();
     let qty = 0;
     let any = false;
@@ -1781,48 +1850,53 @@ async function importRealHistory() {
       any = true;
       qty += t.type === "buy" ? t.qty : -t.qty;
     });
-    return any ? splitAdjustQty(ticker, qty, dateStr) : 0;
+    return any ? qty : 0;
   };
-  const qtyForRowAtDate = (p, dateStr) => {
-    const recon = historicalQty(p.ticker, dateStr);
-    return recon !== null ? recon * rowShareOfTicker(p) : parseNum(p.quantity);
+  const historicalValueBrl = (p, dateStr) => {
+    const qty = historicalQty(p.ticker, dateStr);
+    const priceUsd = tickerCloses[p.ticker]?.[dateStr];
+    const fx = fxRates[dateStr];
+    if (qty === null || !priceUsd || !fx) return null; // can't reconstruct, caller should fall back
+    return qty * priceUsd * fx;
   };
 
   // When the same ticker is split across more than one row/broker, divide the reconstructed
   // historical quantity between them using each row's share of today's quantity for that
-  // ticker — otherwise every row sharing a ticker would each get the FULL historical amount.
+  // ticker — otherwise every row sharing a ticker would each get the FULL historical amount,
+  // double (or more) counting the gain.
   const tickerTotalQtyToday = {};
   state.portfolio.forEach((p) => {
     tickerTotalQtyToday[p.ticker] = (tickerTotalQtyToday[p.ticker] || 0) + parseNum(p.quantity);
   });
-  function rowShareOfTicker(p) {
+  const rowShareOfTicker = (p) => {
     const total = tickerTotalQtyToday[p.ticker];
-    if (!total) return 1;
+    if (!total) return 1; // only row for this ticker (or no current quantity on file) — take it all
     return parseNum(p.quantity) / total;
-  }
+  };
 
   const newEntries = [...allDates]
     .filter((d) => !existingDates.has(d) && !isNonTradingDay(d))
     .sort()
     .map((d) => {
-      const fxToday = fxRates[d];
-      let totalSaldoStartOfDay = 0;
+      let totalSaldoForDate = 0;
+      let hadAnyReconstruction = false;
       const rows = state.portfolio.map((p) => {
-        const prevDate = tickerPrevDate[p.ticker]?.[d];
-        const priceAtPrev = prevDate ? tickerCloses[p.ticker]?.[prevDate] : null;
-        const fxAtPrev = prevDate ? nearestOnOrBefore(fxRates, prevDate) : null;
-        const qtyStart = Math.max(0, qtyForRowAtDate(p, prevDate || d));
         const pct = tickerChangePct[p.ticker]?.[d] ?? 0;
-        // Si falta precio o cambio histórico para ese día, no hay forma confiable de
-        // reconstruir el saldo: se omite esa posición ese día (saldo 0) en vez de usar
-        // el saldo ACTUAL (mucho mayor), que distorsionaría todo el cálculo acumulado.
-        const saldo = priceAtPrev != null && fxAtPrev != null ? qtyStart * priceAtPrev * fxAtPrev : 0;
-        totalSaldoStartOfDay += saldo;
+        const prevDate = tickerPrevDate[p.ticker]?.[d];
+        let saldo = parseNum(p.saldo); // fallback: today's value
+        if (prevDate) {
+          const histValue = historicalValueBrl(p, prevDate);
+          if (histValue !== null) {
+            saldo = histValue * rowShareOfTicker(p);
+            hadAnyReconstruction = true;
+          }
+        }
+        totalSaldoForDate += saldo;
         return { id: p.id, ticker: p.ticker, broker: p.broker, saldo, changePct: pct, gain: (saldo * pct) / 100 };
       });
       const priceTotal = rows.reduce((s, r) => s + r.gain, 0);
       const fxPct = fxChangePct[d] ?? 0;
-      const fxGain = (totalSaldoStartOfDay * fxPct) / 100;
+      const fxGain = ((hadAnyReconstruction ? totalSaldoForDate : totalSaldo) * fxPct) / 100;
       return { id: `real-${d}`, date: `${d}T12:00:00`, rows, fxPct, fxGain, priceTotal, total: priceTotal + fxGain };
     });
 
@@ -1885,46 +1959,6 @@ function exportBackup() {
     fxRateInput: cache.fxRateInput,
   };
   downloadBlob(JSON.stringify(backup, null, 2), `pnl-backup-${todayYMD()}.json`, "application/json");
-}
-async function fetchFxHistoryRange(fromDate, toDate) {
-  const twelveKey = (state.posicoes.apiKey || "").trim();
-  if (!twelveKey) return {};
-  try {
-    const url = `https://api.twelvedata.com/time_series?symbol=USD/BRL&interval=1day&start_date=${fromDate}&end_date=${toDate}&apikey=${encodeURIComponent(twelveKey)}`;
-    const resp = await fetch(url);
-    const data = await resp.json();
-    if (!Array.isArray(data?.values)) return {};
-    const map = {};
-    data.values.forEach((v) => {
-      const d = String(v.datetime).slice(0, 10);
-      const close = parseFloat(v.close);
-      if (Number.isFinite(close)) map[d] = close;
-    });
-    return map;
-  } catch (_) {
-    return {};
-  }
-}
-
-function fxRateNear(fxMap, dateStr) {
-  const dates = Object.keys(fxMap).sort();
-  if (!dates.length) return null;
-  let chosen = null;
-  for (const d of dates) {
-    if (d <= dateStr) chosen = d;
-    else break;
-  }
-  return fxMap[chosen ?? dates[0]];
-}
-
-function nearestOnOrBefore(map, dateStr) {
-  const dates = Object.keys(map).sort();
-  let chosen = null;
-  for (const d of dates) {
-    if (d <= dateStr) chosen = d;
-    else break;
-  }
-  return chosen !== null ? map[chosen] : null;
 }
 
 function parseCsvLine(line) {
@@ -2053,7 +2087,7 @@ function addTransaction() {
 function importPurchasesFile(file) {
   const p = state.posicoes;
   const reader = new FileReader();
-  reader.onload = async () => {
+  reader.onload = () => {
     try {
       const lines = String(reader.result).split(/\r?\n/).filter((l) => l.trim());
       if (!lines.length) throw new Error("vacío");
@@ -2064,7 +2098,6 @@ function importPurchasesFile(file) {
         type: header.indexOf("type"),
         qty: header.indexOf("qty"),
         price: header.indexOf("price"),
-        fx: header.indexOf("fx"),
       };
       if (idx.symbol === -1 || idx.type === -1 || idx.qty === -1 || idx.price === -1) {
         throw new Error("Faltan columnas (symbol, type, qty, price)");
@@ -2074,7 +2107,18 @@ function importPurchasesFile(file) {
       // sort chronologically so sells reduce the running average cost correctly, oldest first.
       txs.sort((a, b) => new Date(a[idx.date]) - new Date(b[idx.date]));
 
-   const parseQty = (raw) => parseNum(raw);
+      // Some exports show Qty as a plain decimal (e.g. "80.96"). Others show it as an
+      // integer count of THOUSANDTHS of a share, with commas only as thousands grouping
+      // (e.g. "1,070" meaning 1.070 shares, "977" meaning 0.977 shares — no literal decimal
+      // point anywhere in the column). Detect which convention this file uses by checking
+      // whether any Qty value in the whole file contains a ".".
+      const qtyHasDecimalPoint = txs.some((cols) => String(cols[idx.qty] || "").includes("."));
+      const parseQty = (raw) => {
+        const s = String(raw ?? "").trim();
+        if (qtyHasDecimalPoint) return parseNum(s);
+        const intVal = parseFloat(s.replace(/,/g, ""));
+        return Number.isFinite(intVal) ? intVal / 1000 : 0;
+      };
 
       // Keep a persisted record of every transaction (deduped), so the app remembers how far
       // back your investing history goes — used e.g. to build the year filters in Historial.
@@ -2099,52 +2143,36 @@ function importPurchasesFile(file) {
 
       const qty = {};
       const cost = {};
-      const costBrl = {};
       txs.forEach((cols) => {
         const rawSym = (cols[idx.symbol] || "").trim();
         const sym = rawSym.includes(":") ? rawSym.split(":").pop() : rawSym;
         if (!sym) return;
         const type = (cols[idx.type] || "").trim().toLowerCase();
-        const dateRaw = cols[idx.date] || "";
-        const dateStr = dateRaw ? new Date(dateRaw).toISOString().slice(0, 10) : todayYMD();
-        const q = splitAdjustQty(sym, parseQty(cols[idx.qty]), dateStr);
-        const pr = parseNum(cols[idx.price]) / (q ? q / parseQty(cols[idx.qty]) || 1 : 1);
-        const fxAtTx = idx.fx !== -1 ? parseNum(cols[idx.fx]) : 0;
+        const q = parseQty(cols[idx.qty]);
+        const pr = parseNum(cols[idx.price]);
         qty[sym] = qty[sym] || 0;
         cost[sym] = cost[sym] || 0;
-        costBrl[sym] = costBrl[sym] || 0;
         if (type === "buy") {
           qty[sym] += q;
           cost[sym] += q * pr;
-          if (fxAtTx) costBrl[sym] += q * pr * fxAtTx;
         } else if (type === "sell") {
           if (qty[sym] > 0) {
             const avg = cost[sym] / qty[sym];
-            const avgBrl = costBrl[sym] / qty[sym];
             cost[sym] -= avg * q;
-            costBrl[sym] -= avgBrl * q;
           }
           qty[sym] -= q;
         }
       });
 
       const avgCostByTicker = {};
-      const avgCostBrlByTicker = {};
       Object.keys(qty).forEach((sym) => {
-        if (qty[sym] > 0.0001) {
-          avgCostByTicker[sym] = cost[sym] / qty[sym];
-          avgCostBrlByTicker[sym] = costBrl[sym] / qty[sym];
-        }
+        if (qty[sym] > 0.0001) avgCostByTicker[sym] = cost[sym] / qty[sym];
       });
 
       let matched = 0;
       state.portfolio = state.portfolio.map((row) => {
         const avg = avgCostByTicker[row.ticker];
-        const avgBrl = avgCostBrlByTicker[row.ticker];
-        if (typeof avg === "number" && Number.isFinite(avg)) {
-          matched++;
-          return { ...row, avgCost: avg, avgCostBrl: Number.isFinite(avgBrl) ? avgBrl : null };
-        }
+        if (typeof avg === "number" && Number.isFinite(avg)) { matched++; return { ...row, avgCost: avg }; }
         return row;
       });
       persistPortfolio();
@@ -2238,27 +2266,23 @@ function switchTab(tab) {
 
 function render() {
   const root = document.getElementById("app");
-  const rowsForTotal = state.tab === "posicoes" && state.posicoes ? state.posicoes.rows : state.portfolio;
-  const totalSaldo =
-    state.tab === "posicoes" && state.posicoes
-      ? state.posicoes.rows.reduce((s, r) => s + rowEffectiveValue(r), 0)
-      : state.portfolio.reduce((s, p) => s + (parseNum(p.saldo) || 0), 0);
+  // El total del header debe ser siempre el mismo sin importar la pestaña activa.
+  // Antes, en "Hoy"/"Historial" se usaba el saldo PERSISTIDO (state.portfolio.saldo,
+  // que solo se actualiza al presionar "Guardar posiciones"), mientras que en
+  // "Posiciones" se usaba el valor EN VIVO (cantidad × precio × cambio actuales).
+  // Si actualizabas cotizaciones sin guardar, ambos números se desincronizaban y
+  // el total "saltaba" al cambiar de pestaña. state.posicoes.rows ya existe desde
+  // el arranque (resetPosicoesState() corre en la inicialización) y se mantiene
+  // sincronizado en vivo, así que usarlo siempre evita esa inconsistencia.
+  const rowsForTotal = state.posicoes ? state.posicoes.rows : state.portfolio;
+  const totalSaldo = rowsForTotal.reduce((s, r) => s + rowEffectiveValue(r), 0);
   const totalUsd = rowsForTotal.reduce((s, r) => s + rowEffectiveValueUsd(r), 0);
   const isUsd = state.displayCurrency === "USD";
   const displayedTotal = isUsd ? (totalUsd ? fmtUSD(totalUsd) : "— US$") : fmtBRL(totalSaldo);
   const lastEntry = state.history.length ? state.history[state.history.length - 1] : null;
-  const isTodayEntry = lastEntry && new Date(lastEntry.date).toDateString() === new Date().toDateString();
-  const fxForHeader = parseNum(state.posicoes?.fxRateInput);
-  const dayChangePct = isTodayEntry && totalSaldo ? (lastEntry.total / totalSaldo) * 100 : 0;
-  const dayChangeValueDisplay = isTodayEntry
-    ? isUsd
-      ? fxForHeader
-        ? fmtUSD(lastEntry.total / fxForHeader)
-        : "— US$"
-      : fmtBRL(lastEntry.total)
-    : "";
+  const isTodayEntry = lastEntry && dateToBrazilYMD(lastEntry.date) === brazilTodayYMD();
   const dayChangeHtml = isTodayEntry
-    ? `<span class="header-total-change ${lastEntry.total >= 0 ? "up" : "down"}">${lastEntry.total >= 0 ? "+" : ""}${dayChangeValueDisplay} (${fmtPct(dayChangePct)})</span>`
+    ? `<span class="header-total-change ${lastEntry.total >= 0 ? "up" : "down"}">${lastEntry.total >= 0 ? "+" : ""}${fmtBRL(lastEntry.total)} (${fmtPct(totalSaldo ? (lastEntry.total / totalSaldo) * 100 : 0)})</span>`
     : "";
 
   root.innerHTML = `
@@ -2485,6 +2509,49 @@ if ("serviceWorker" in navigator) {
 }
 
 /* ---------------------------------------------------------------------- */
+/*  Guardado automático del resultado diario después de las 20:00 (Brasil) */
+/* ---------------------------------------------------------------------- */
+
+let autoSaveInProgress = false;
+
+async function maybeAutoSaveToday() {
+  if (autoSaveInProgress) return;
+  if (!isPastAutoSaveTime()) return;
+  if (isMarketClosedToday()) return; // fin de semana o feriado bursátil: nada nuevo que calcular
+  if (state.history.some((e) => dateToBrazilYMD(e.date) === brazilTodayYMD())) return; // hoy ya está guardado
+  if (state.hoje.fetchStatus === "loading") return;
+  if (state.hoje.status === "review") return; // hay una edición manual en curso, no interrumpir
+
+  // Si ya hay un resultado calculado en pantalla (por ejemplo el usuario buscó/pegó los datos
+  // pero no llegó a guardar), se usa ese mismo resultado en vez de volver a buscar cotizaciones.
+  if (state.hoje.status === "result" && state.hoje.result) {
+    autoSaveInProgress = true;
+    try {
+      saveHistoryAction();
+    } finally {
+      autoSaveInProgress = false;
+    }
+    return;
+  }
+
+  const finnhubKey = (state.posicoes.finnhubKey || "").trim();
+  const twelveKey = (state.posicoes.apiKey || "").trim();
+  if (!finnhubKey && !twelveKey) return; // sin claves configuradas no hay cómo calcular nada
+
+  autoSaveInProgress = true;
+  try {
+    await fetchLiveDayChange({ autoSave: true });
+  } finally {
+    autoSaveInProgress = false;
+  }
+}
+
+function startAutoSaveWatcher() {
+  maybeAutoSaveToday();
+  setInterval(maybeAutoSaveToday, 60000);
+}
+
+/* ---------------------------------------------------------------------- */
 /*  Init                                                                   */
 /* ---------------------------------------------------------------------- */
 
@@ -2493,6 +2560,8 @@ resetHojeState();
 resetPosicoesState();
 resetHistoricoState();
 render();
+startAutoSaveWatcher();
+
 </script>
 </body>
 </html>
