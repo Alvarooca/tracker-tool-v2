@@ -1067,18 +1067,10 @@ function parsePasted() {
 function compute() {
   const h = state.hoje;
   const rows = state.portfolio.map((p) => {
-        const prevDate = tickerPrevDate[p.ticker]?.[d];
-        const priceAtPrev = prevDate ? tickerCloses[p.ticker]?.[prevDate] : null;
-        const fxAtPrev = prevDate ? fxRates[prevDate] : null;
-        const qtyStart = Math.max(0, qtyForRowAtDate(p, prevDate || d));
-        const pct = tickerChangePct[p.ticker]?.[d] ?? 0;
-        // Si falta precio o cambio históricos para ese día, no hay forma confiable de
-        // reconstruir el saldo: se omite esa posición ese día (saldo 0) en vez de usar
-        // el saldo ACTUAL (mucho mayor), que distorsionaría todo el cálculo acumulado.
-        const saldo = priceAtPrev != null && fxAtPrev != null ? qtyStart * priceAtPrev * fxAtPrev : 0;
-        totalSaldoStartOfDay += saldo;
-        return { id: p.id, ticker: p.ticker, broker: p.broker, saldo, changePct: pct, gain: (saldo * pct) / 100 };
-      });
+    const pct = parseNum(h.reviewMap[p.id]);
+    const saldo = parseNum(p.saldo);
+    return { id: p.id, ticker: p.ticker, broker: p.broker, saldo, changePct: pct, gain: (saldo * pct) / 100 };
+  });
   const priceTotal = rows.reduce((s, r) => s + r.gain, 0);
   const fxPct = parseNum(h.fxPctInput);
   const totalSaldo = state.portfolio.reduce((s, p) => s + parseNum(p.saldo), 0);
