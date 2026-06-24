@@ -1,0 +1,2489 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>P&amp;L Diario — Cartera Internacional</title>
+<meta name="description" content="Sigue el resultado diario de tu cartera internacional: posiciones, variación del día e historial de P&amp;L.">
+<meta name="theme-color" content="#0A0D10">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="P&amp;L Diario">
+<link rel="manifest" href="./manifest.json">
+<link rel="icon" href="./icons/icon-192.png">
+<link rel="apple-touch-icon" href="./icons/icon-192.png">
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+:root {
+  --bg-app: #0A0D10;
+  --bg-header-grad: #0F1318;
+  --bg-card: #12161B;
+  --bg-input: #0D1115;
+  --bg-row-alt: #161A20;
+  --border: #1C2128;
+  --border-input: #232932;
+  --text-primary: #ECEFF2;
+  --text-secondary: #C7CCD3;
+  --text-muted: #7A8290;
+  --text-muted2: #ABB2BC;
+  --text-dim: #4A5360;
+  --accent-gold: #E8B339;
+  --up: #1FD8A4;
+  --down: #FF6B6B;
+  --on-accent: #15130A;
+}
+
+[data-theme="light"] {
+  --bg-app: #F7F8FA;
+  --bg-header-grad: #FFFFFF;
+  --bg-card: #FFFFFF;
+  --bg-input: #F0F1F3;
+  --bg-row-alt: #EEF0F3;
+  --border: #E2E5E9;
+  --border-input: #D5D9DE;
+  --text-primary: #14181D;
+  --text-secondary: #3A4250;
+  --text-muted: #6B7280;
+  --text-muted2: #4B5563;
+  --text-dim: #9AA1AC;
+  --accent-gold: #9A6B00;
+  --up: #0F9D78;
+  --down: #D92D2D;
+  --on-accent: #FFFFFF;
+}
+
+
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; background: var(--bg-app); }
+
+.app {
+  background: var(--bg-app);
+  color: var(--text-primary);
+  font-family: 'Inter', sans-serif;
+  min-height: 100vh;
+  padding-bottom: 32px;
+}
+
+.header { border-bottom: 1px solid var(--border); background: linear-gradient(180deg, var(--bg-header-grad) 0%, var(--bg-app) 100%); }
+.header-top { display: flex; justify-content: space-between; align-items: flex-end; padding: 20px 18px 14px; gap: 12px; flex-wrap: wrap; }
+.brand-eyebrow { font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.12em; color: var(--accent-gold); margin-bottom: 4px; }
+.brand-title { font-family: 'Space Grotesk', sans-serif; font-size: 24px; font-weight: 700; margin: 0; letter-spacing: -0.01em; }
+.header-right { display: flex; align-items: center; gap: 12px; }
+.header-total { text-align: right; display: flex; flex-direction: column; }
+.header-total-label { font-size: 11px; color: var(--text-muted); margin-bottom: 2px; }
+.header-total-value { font-family: 'IBM Plex Mono', monospace; font-size: 20px; font-weight: 600; }
+.header-total-change { display: block; font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; margin-top: 2px; }
+
+.install-pill { background: transparent; border: 1px solid var(--accent-gold); color: var(--accent-gold); font-family: 'Inter', sans-serif; font-size: 11px; font-weight: 600; padding: 7px 11px; border-radius: 20px; display: inline-flex; align-items: center; gap: 5px; cursor: pointer; white-space: nowrap; }
+.install-pill[hidden] { display: none; }
+
+.theme-toggle { background: transparent; border: 1px solid var(--border-input); color: var(--text-secondary); border-radius: 20px; padding: 7px; display: inline-flex; align-items: center; cursor: pointer; }
+.theme-icon-dark { display: none; }
+[data-theme="light"] .theme-icon-light { display: none; }
+[data-theme="light"] .theme-icon-dark { display: inline-block; }
+
+.header-total-toprow { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+.currency-toggle { background: transparent; border: 1px solid var(--border-input); color: var(--text-muted); font-size: 10px; padding: 2px 7px; border-radius: 10px; cursor: pointer; font-family: 'IBM Plex Mono', monospace; }
+
+.tape { overflow: hidden; border-top: 1px solid var(--border); background: var(--bg-input); padding: 9px 0; }
+.tape-track { display: flex; gap: 28px; white-space: nowrap; animation: scroll-tape 30s linear infinite; padding-left: 18px; width: max-content; }
+@media (prefers-reduced-motion: reduce) { .tape-track { animation: none; } }
+@keyframes scroll-tape { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+.tape-item { font-family: 'IBM Plex Mono', monospace; font-size: 12px; display: inline-flex; gap: 7px; align-items: center; color: var(--text-secondary); }
+.tape-item b { color: var(--text-primary); font-weight: 600; }
+
+.tabbar { display: flex; gap: 4px; padding: 10px 14px 0; }
+.tab { flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; background: transparent; border: none; color: var(--text-muted); font-family: 'Inter', sans-serif; font-size: 13px; font-weight: 500; padding: 10px 8px; border-radius: 8px 8px 0 0; cursor: pointer; border-bottom: 2px solid transparent; }
+.tab-active { color: var(--text-primary); border-bottom: 2px solid var(--accent-gold); background: var(--bg-card); }
+
+.main { padding: 16px 14px 0; max-width: 720px; margin: 0 auto; }
+.stack { display: flex; flex-direction: column; gap: 14px; }
+
+.card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+.card-title-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.card-title { font-family: 'Space Grotesk', sans-serif; font-size: 15px; font-weight: 600; margin: 0; }
+
+.upload-card, .center-card { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 10px; padding: 30px 16px; }
+.upload-text { color: var(--text-muted2); font-size: 13px; max-width: 340px; line-height: 1.5; }
+.upload-hint { color: var(--text-dim); font-size: 11px; max-width: 300px; line-height: 1.4; margin-top: -4px; }
+.paste-area { width: 100%; max-width: 360px; min-height: 70px; background: var(--bg-input); border: 1px solid var(--border-input); color: var(--text-primary); font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; padding: 10px; border-radius: 8px; resize: vertical; }
+.paste-area:focus { outline: none; border-color: var(--accent-gold); }
+.divider-text { color: var(--text-dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; margin: 4px 0; }
+
+.btn { font-family: 'Inter', sans-serif; font-size: 13px; font-weight: 600; border-radius: 8px; padding: 10px 16px; display: inline-flex; align-items: center; gap: 7px; cursor: pointer; border: 1px solid transparent; background: none; }
+.btn-primary { background: var(--accent-gold); color: var(--on-accent); }
+.btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-ghost { background: transparent; color: var(--text-secondary); border: 1px solid var(--border-input); }
+.btn-ghost:disabled { opacity: 0.4; cursor: not-allowed; }
+.icon-btn { background: transparent; border: none; color: var(--text-muted); cursor: pointer; padding: 4px; display: inline-flex; }
+.icon-btn:hover { color: var(--down); }
+.move-cell { display: flex; flex-direction: column; gap: 2px; }
+.move-btn { padding: 2px; }
+.move-btn:hover { color: var(--accent-gold); }
+.move-btn:disabled { opacity: 0.25; cursor: default; }
+.move-btn:disabled:hover { color: var(--text-muted); }
+
+.row-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+.toolbar-row { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.period-pills { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; }
+.period-pill { flex-shrink: 0; background: transparent; border: 1px solid var(--border-input); color: var(--text-muted); font-size: 12px; font-family: 'Inter', sans-serif; font-weight: 500; padding: 6px 12px; border-radius: 20px; cursor: pointer; white-space: nowrap; }
+.period-pill.active { background: var(--accent-gold); color: var(--on-accent); border-color: var(--accent-gold); font-weight: 600; }
+.btn-sm { padding: 6px 11px; font-size: 11.5px; }
+
+.table { min-width: 100%; border-collapse: collapse; font-size: 13px; }
+.table-scroll { overflow-x: auto; max-width: 100%; }
+.table th { text-align: left; color: var(--text-muted); font-weight: 500; font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; padding: 6px 6px; border-bottom: 1px solid var(--border); }
+.table td { padding: 9px 6px; border-bottom: 1px solid var(--bg-row-alt); font-family: 'IBM Plex Mono', monospace; }
+.table td:first-child { font-family: 'Inter', sans-serif; }
+.table .num { text-align: right; }
+.row-fx td { background: var(--bg-header-grad); }
+
+.up { color: var(--up); }
+.down { color: var(--down); }
+.muted { color: var(--text-muted); }
+.small { font-size: 11.5px; }
+
+.input-cell { width: 100%; background: var(--bg-input); border: 1px solid var(--border-input); color: var(--text-primary); font-family: 'IBM Plex Mono', monospace; font-size: 13px; padding: 6px 8px; border-radius: 6px; text-align: right; }
+.input-cell:focus { outline: none; border-color: var(--accent-gold); }
+.table-editable td:first-child .input-cell, .table-editable td:nth-child(2) .input-cell { text-align: left; }
+
+.summary { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 10px; display: flex; flex-direction: column; gap: 7px; }
+.summary-line { display: flex; justify-content: space-between; font-size: 13px; font-family: 'IBM Plex Mono', monospace; }
+.summary-total { font-size: 15px; font-weight: 700; border-top: 1px solid var(--border); padding-top: 8px; margin-top: 2px; font-family: 'Space Grotesk', sans-serif; }
+
+.checkbox-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-muted2); margin-top: 12px; cursor: pointer; }
+
+.banner { display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; padding: 10px 12px; border-radius: 8px; margin-bottom: 12px; }
+.banner-warn { background: rgba(232, 179, 57, 0.1); color: var(--accent-gold); border: 1px solid rgba(232, 179, 57, 0.25); }
+.banner-ok { background: rgba(31, 216, 164, 0.1); color: var(--up); border: 1px solid rgba(31, 216, 164, 0.25); }
+.error-list { margin: 0; padding-left: 18px; }
+.error-list li { margin-bottom: 4px; }
+.error-list li:last-child { margin-bottom: 0; }
+
+.empty-state { text-align: center; color: var(--text-muted); padding: 30px 16px; }
+.total-return-card { display: flex; flex-direction: column; gap: 4px; padding: 14px 16px; }
+.total-return-value { font-family: 'Space Grotesk', sans-serif; font-size: 20px; font-weight: 700; }
+.breakdown-subtitle { margin: 14px 0 8px; }
+.breakdown-subtitle:first-of-type { margin-top: 0; }
+.breakdown-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.breakdown-label { width: 64px; flex-shrink: 0; font-size: 12px; font-family: 'IBM Plex Mono', monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.breakdown-bar-track { flex: 1; height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; }
+.breakdown-bar-fill { height: 100%; border-radius: 4px; }
+.breakdown-pct { width: 44px; flex-shrink: 0; text-align: right; font-size: 12px; font-family: 'IBM Plex Mono', monospace; color: var(--text-muted2); }
+.tx-form { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
+.tx-select { width: 100%; text-align: left; }
+.tx-form-row { display: flex; gap: 8px; }
+.tx-form-row .input-cell { flex: 1; min-width: 0; }
+.tx-date { width: 100%; color-scheme: dark; }
+[data-theme="light"] .tx-date { color-scheme: light; }
+.import-date-row .tx-ticker-wrap { display: flex; flex-direction: column; gap: 4px; }
+.import-range-card { padding-bottom: 14px; }
+.tx-ticker-wrap { position: relative; flex: 1; min-width: 0; }
+.ticker-search-results { position: absolute; top: 100%; left: 0; right: 0; z-index: 20; background: var(--bg-card); border: 1px solid var(--border-input); border-radius: 8px; margin-top: 4px; overflow: hidden; max-height: 220px; overflow-y: auto; }
+.ticker-search-item { display: flex; flex-direction: column; gap: 1px; width: 100%; text-align: left; background: transparent; border: none; border-bottom: 1px solid var(--border); color: var(--text-primary); padding: 8px 10px; font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; cursor: pointer; }
+.ticker-search-item:last-child { border-bottom: none; }
+.ticker-search-item:hover, .ticker-search-item:active { background: var(--bg-input); }
+
+.icon { display: inline-block; vertical-align: middle; flex-shrink: 0; }
+
+.avatar-img { border-radius: 50%; object-fit: cover; vertical-align: middle; flex-shrink: 0; background: #fff; }
+.avatar-fallback { display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; color: var(--bg-app); font-weight: 700; font-family: 'Space Grotesk', sans-serif; vertical-align: middle; flex-shrink: 0; }
+.ticker-cell { display: flex; align-items: center; gap: 8px; }
+.ticker-cell .avatar-img, .ticker-cell .avatar-fallback { flex-shrink: 0; }
+.ticker-cell input.input-cell { width: 64px; flex: 1 1 64px; min-width: 50px; }
+
+.quotes-bar { display: flex; align-items: flex-end; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
+.quotes-fx { display: flex; flex-direction: column; gap: 4px; min-width: 110px; }
+.input-fx { text-align: left; }
+.quotes-updated { margin: 6px 0 12px; }
+.api-key-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.input-apikey { flex: 1; min-width: 160px; text-align: left; }
+.computed-value { color: var(--up); font-family: 'IBM Plex Mono', monospace; }
+
+.spin { animation: spin 1s linear infinite; }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+.chart-wrap { width: 100%; overflow: hidden; }
+.chart-svg { display: block; }
+.chart-svg text { font-family: 'IBM Plex Mono', monospace; fill: var(--text-muted2); font-size: 12px; }
+
+button:focus-visible, input:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--accent-gold);
+  outline-offset: 2px;
+}
+
+@media (max-width: 480px) {
+  .header-top { flex-direction: column; align-items: flex-start; }
+  .header-right { width: 100%; justify-content: space-between; }
+  .header-total { text-align: right; }
+}
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<script>
+/* ---------------------------------------------------------------------- */
+/*  Constants & helpers                                                   */
+/* ---------------------------------------------------------------------- */
+
+const DEFAULT_PORTFOLIO = [
+  { id: "pg-etrade", ticker: "PG", broker: "E*TRADE", quantity: 80.96, saldo: 58007.2 },
+  { id: "ko-ms", ticker: "KO", broker: "Morgan Stanley", quantity: 97.32, saldo: 39919.13 },
+  { id: "wmb-nomad", ticker: "WMB", broker: "Nomad", quantity: 32.23, saldo: 12626.73 },
+  { id: "usb-nomad", ticker: "USB", broker: "Nomad", quantity: 31.28, saldo: 8574.66 },
+  { id: "tm-nomad", ticker: "TM", broker: "Nomad", quantity: 7.36, saldo: 7029.68 },
+  { id: "arkb-nomad", ticker: "ARKB", broker: "Nomad", quantity: 39.43, saldo: 5107.62 },
+  { id: "arcc-nomad", ticker: "ARCC", broker: "Nomad", quantity: 21.8, saldo: 2050.72 },
+  { id: "pg-nomad", ticker: "PG", broker: "Nomad", quantity: 0.89, saldo: 639.55 },
+  { id: "sgov-nomad", ticker: "SGOV", broker: "Nomad", quantity: 1.0, saldo: 505.93 },
+];
+
+const parseNum = (v) => {
+  if (typeof v === "number") return v;
+  const n = parseFloat(String(v ?? "").trim().replace(",", "."));
+  return Number.isFinite(n) ? n : 0;
+};
+
+const fmtBRL = (v) => (v ?? 0).toLocaleString("es", { style: "currency", currency: "BRL" });
+const fmtUSD = (v) => (v ?? 0).toLocaleString("es", { style: "currency", currency: "USD" });
+
+const fmtPct = (v) => `${v >= 0 ? "+" : ""}${(v ?? 0).toLocaleString("es", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
+
+const fmtShortDate = (iso) => {
+  const d = new Date(iso);
+  return d.toLocaleDateString("es", { day: "2-digit", month: "2-digit" });
+};
+
+const fmtFullDate = (iso) => {
+  const d = new Date(iso);
+  return `${d.toLocaleDateString("es")} · ${d.toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit" })}`;
+};
+
+const uid = () => `row-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+
+// Splits manuales: ratio = cuántas acciones nuevas por cada acción vieja, vigentes desde
+// splitDate (inclusive). Los precios de la API ya vienen ajustados por split, así que hay
+// que multiplicar cantidades/dividir costos de transacciones ANTERIORES al split.
+const STOCK_SPLITS = {
+  ARKB: [{ date: "2025-06-13", ratio: 3 }],
+};
+const splitAdjustQty = (ticker, qty, dateStr) => {
+  const splits = STOCK_SPLITS[ticker];
+  if (!splits) return qty;
+  let adjusted = qty;
+  splits.forEach((s) => {
+    if (dateStr < s.date) adjusted *= s.ratio;
+  });
+  return adjusted;
+};
+
+const isWeekend = () => {
+  const day = new Date().getDay();
+  return day === 0 || day === 6;
+};
+
+// NYSE/Nasdaq full-closure holidays. Source: NYSE Group official holiday calendar
+// announcements (2025-2027). Needs a manual update once 2028 dates are published.
+const US_MARKET_HOLIDAYS = new Set([
+  "2025-01-01", "2025-01-20", "2025-02-17", "2025-04-18", "2025-05-26",
+  "2025-06-19", "2025-07-04", "2025-09-01", "2025-11-27", "2025-12-25",
+  "2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03", "2026-05-25",
+  "2026-06-19", "2026-07-03", "2026-09-07", "2026-11-26", "2026-12-25",
+  "2027-01-01", "2027-01-18", "2027-02-15", "2027-03-26", "2027-05-31",
+  "2027-06-18", "2027-07-05", "2027-09-06", "2027-11-25", "2027-12-24",
+]);
+
+const todayYMD = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+
+const isHolidayToday = () => US_MARKET_HOLIDAYS.has(todayYMD());
+const isMarketClosedToday = () => isWeekend() || isHolidayToday();
+const marketClosedReason = () => (isWeekend() ? "es fin de semana" : "es feriado bursátil en EE. UU.");
+
+// Same checks but for an arbitrary 'YYYY-MM-DD' date (used when filtering imported history,
+// not just "today") — guards against data sources that occasionally stamp a value on a
+// weekend (e.g. FX feeds spanning into Sat/Sun) even though the US stock market was closed.
+const isNonTradingDay = (ymd) => {
+  const d = new Date(`${ymd}T12:00:00`);
+  const day = d.getDay();
+  return day === 0 || day === 6 || US_MARKET_HOLIDAYS.has(ymd);
+};
+
+const escapeHtml = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const escapeAttr = (s) => escapeHtml(s).replace(/"/g, "&quot;");
+
+const DEMO_VOLATILITY = {
+  PG: [-1.5, 3.5],
+  KO: [-1, 3],
+  WMB: [-2.5, 2.5],
+  USB: [-1, 2.5],
+  TM: [-2, 1.5],
+  ARCC: [-1, 1.5],
+  ARKB: [-5, 5],
+  SGOV: [-0.05, 0.08],
+};
+const DEMO_FX_RANGE = [-1, 2];
+
+const randIn = ([min, max]) => min + Math.random() * (max - min);
+
+const generateDemoEntries = (portfolio, days = 14) => {
+  const totalSaldo = portfolio.reduce((s, p) => s + parseNum(p.saldo), 0);
+  const entries = [];
+  let cursor = new Date();
+  while (entries.length < days) {
+    cursor = new Date(cursor.getTime() - 86400000);
+    const dow = cursor.getDay();
+    if (dow === 0 || dow === 6) continue; // pula fins de semana
+    const fxPct = randIn(DEMO_FX_RANGE);
+    const rows = portfolio.map((p) => {
+      const range = DEMO_VOLATILITY[p.ticker] || [-2, 2];
+      const changePct = randIn(range);
+      const saldo = parseNum(p.saldo);
+      return { id: p.id, ticker: p.ticker, broker: p.broker, saldo, changePct, gain: (saldo * changePct) / 100 };
+    });
+    const priceTotal = rows.reduce((s, r) => s + r.gain, 0);
+    const fxGain = (totalSaldo * fxPct) / 100;
+    entries.push({
+      id: `demo-${cursor.getTime()}`,
+      date: cursor.toISOString(),
+      rows,
+      fxPct,
+      fxGain,
+      priceTotal,
+      total: priceTotal + fxGain,
+    });
+  }
+  return entries.reverse();
+};
+
+/* ---------------------------------------------------------------------- */
+/*  Icons (hand-drawn, dependency-free)                                   */
+/* ---------------------------------------------------------------------- */
+
+const ICON_PATHS = {
+  wallet: '<path d="M3 7h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/><path d="M16 7V5a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v2"/><path d="M16 13h3"/>',
+  refresh: '<path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/>',
+  save: '<path d="M5 4h11l3 3v13H5z"/><path d="M8 4v6h8V4"/><path d="M8 20v-6h8v6"/>',
+  trash: '<path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/>',
+  plus: '<path d="M12 5v14"/><path d="M5 12h14"/>',
+  x: '<path d="M6 6l12 12"/><path d="M18 6L6 18"/>',
+  "check-circle": '<circle cx="12" cy="12" r="9"/><path d="M8 12l3 3 5-6"/>',
+  "alert-triangle": '<path d="M12 4l9 16H3z"/><path d="M12 10v4"/><path d="M12 17h.01"/>',
+  history: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l4 2"/>',
+  "list-checks": '<path d="M4 6h2"/><path d="M9 6h11"/><path d="M4 12h2"/><path d="M9 12h11"/><path d="M4 18h2"/><path d="M9 18h11"/>',
+  pencil: '<path d="M4 20l4-1 11-11-3-3L5 16z"/><path d="M14 6l3 3"/>',
+  sparkles: '<path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5z"/><path d="M19 14l.6 1.8 1.8.6-1.8.6L19 19l-.6-1.8-1.8-.6 1.8-.6z"/>',
+  camera: '<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13.5" r="3.5"/>',
+  download: '<path d="M12 3v12"/><path d="M7 11l5 5 5-5"/><path d="M5 20h14"/>',
+  "chevron-up": '<path d="M5 15l7-7 7 7"/>',
+  "chevron-down": '<path d="M5 9l7 7 7-7"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>',
+  moon: '<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/>',
+};
+
+function icon(name, size = 15, cls = "") {
+  const paths = ICON_PATHS[name] || "";
+  return `<svg class="icon ${cls}" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Ticker avatars (real company logo via Finnhub, with a colored-initial  */
+/*  fallback while loading, on error, or for non-stock symbols like fx)   */
+/* ---------------------------------------------------------------------- */
+
+const AVATAR_PALETTE = ["#E8B339", "#1FD8A4", "#5B8DEF", "#E8638C", "#A78BFA", "#F2994A", "#4FC3D9", "#9CCC65"];
+
+function avatarColor(ticker) {
+  let hash = 0;
+  for (let i = 0; i < ticker.length; i++) hash = (hash * 31 + ticker.charCodeAt(i)) | 0;
+  return AVATAR_PALETTE[Math.abs(hash) % AVATAR_PALETTE.length];
+}
+
+function avatarHtml(ticker, logoUrl, size = 22) {
+  const initial = escapeHtml((ticker || "?").slice(0, 1).toUpperCase());
+  const color = avatarColor(ticker || "?");
+  const fallback = `<span class="avatar-fallback" style="width:${size}px;height:${size}px;font-size:${Math.round(size * 0.55)}px;background:${color};${logoUrl ? "display:none" : ""}">${initial}</span>`;
+  if (!logoUrl) return fallback;
+  const safeUrl = escapeAttr(logoUrl);
+  // No HTML is embedded inside the onerror attribute (that caused quote-escaping bugs) —
+  // it just toggles visibility of the always-present fallback span right next to it.
+  const img = `<img class="avatar-img" src="${safeUrl}" width="${size}" height="${size}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='inline-flex'">`;
+  return img + fallback;
+}
+
+/* ---------------------------------------------------------------------- */
+/*  State & persistence (localStorage)                                    */
+/* ---------------------------------------------------------------------- */
+
+const state = {
+  tab: "hoje",
+  portfolio: DEFAULT_PORTFOLIO.map((p) => ({ ...p })),
+  history: [],
+  transactions: [],
+  hoje: null,
+  posicoes: null,
+  historico: null,
+  displayCurrency: "BRL",
+};
+
+function loadState() {
+  try {
+    const p = localStorage.getItem("pnl-portfolio");
+    if (p) state.portfolio = JSON.parse(p);
+  } catch (_) {}
+  try {
+    const h = localStorage.getItem("pnl-history");
+    if (h) state.history = JSON.parse(h);
+  } catch (_) {}
+  try {
+    const tx = localStorage.getItem("pnl-transactions");
+    if (tx) state.transactions = JSON.parse(tx);
+  } catch (_) {}
+  try {
+    const c = localStorage.getItem("pnl-currency");
+    if (c === "USD" || c === "BRL") state.displayCurrency = c;
+  } catch (_) {}
+  try {
+    const t = localStorage.getItem("pnl-theme");
+    if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+  } catch (_) {}
+}
+
+function persistTransactions() {
+  try { localStorage.setItem("pnl-transactions", JSON.stringify(state.transactions)); } catch (_) {}
+}
+
+function persistPortfolio() {
+  try {
+    localStorage.setItem("pnl-portfolio", JSON.stringify(state.portfolio));
+  } catch (_) {}
+}
+
+function persistHistory() {
+  try {
+    localStorage.setItem("pnl-history", JSON.stringify(state.history));
+  } catch (_) {}
+}
+
+function resetHojeState() {
+  let quickSave = false;
+  try { quickSave = localStorage.getItem("pnl-quick-save") === "1"; } catch (_) {}
+  state.hoje = {
+    status: "idle",
+    error: null,
+    reviewMap: {},
+    fxPctInput: "0",
+    result: null,
+    updateSaldo: false,
+    pasteText: "",
+    fetchStatus: "idle",
+    fetchProgressLabel: null,
+    quickSave,
+  };
+}
+function loadQuotesCache() {
+  let apiKey = "", finnhubKey = "", quotes = {}, logos = {}, fxRateInput = "", quotesUpdatedAt = null;
+  try { apiKey = localStorage.getItem("pnl-twelvedata-key") || ""; } catch (_) {}
+  try { finnhubKey = localStorage.getItem("pnl-finnhub-key") || ""; } catch (_) {}
+  try { quotes = JSON.parse(localStorage.getItem("pnl-quotes") || "{}"); } catch (_) {}
+  try { logos = JSON.parse(localStorage.getItem("pnl-logos") || "{}"); } catch (_) {}
+  try {
+    const fx = JSON.parse(localStorage.getItem("pnl-fx") || "null");
+    fxRateInput = typeof fx === "number" ? String(fx) : "";
+  } catch (_) {}
+  try { quotesUpdatedAt = localStorage.getItem("pnl-quotes-updated-at") || null; } catch (_) {}
+  return { apiKey, finnhubKey, quotes, logos, fxRateInput, quotesUpdatedAt };
+}
+
+function persistQuotesCache() {
+  const p = state.posicoes;
+  try {
+    localStorage.setItem("pnl-twelvedata-key", p.apiKey || "");
+    localStorage.setItem("pnl-finnhub-key", p.finnhubKey || "");
+    localStorage.setItem("pnl-quotes", JSON.stringify(p.quotes || {}));
+    localStorage.setItem("pnl-logos", JSON.stringify(p.logos || {}));
+    localStorage.setItem("pnl-fx", JSON.stringify(parseNum(p.fxRateInput) || null));
+    if (p.quotesUpdatedAt) localStorage.setItem("pnl-quotes-updated-at", p.quotesUpdatedAt);
+  } catch (_) {}
+}
+
+function resetPosicoesState() {
+  const cache = loadQuotesCache();
+  const fx = parseNum(cache.fxRateInput);
+  const weightOf = (p) => {
+    const price = typeof p.price === "number" || typeof p.price === "string" ? parseNum(p.price) : parseNum(cache.quotes[p.ticker] ?? "");
+    if (fx && price) return parseNum(p.quantity) * price * fx;
+    return parseNum(p.saldo) || 0;
+  };
+  const rows = state.portfolio
+    .map((p) => ({ ...p, price: typeof p.price === "number" || typeof p.price === "string" ? p.price : (cache.quotes[p.ticker] ?? "") }))
+    .sort((a, b) => weightOf(b) - weightOf(a)); // descending: biggest position first — only on first load of the tab, after that manual ↑↓ takes over
+  state.posicoes = {
+    rows,
+    dirty: false,
+    apiKey: cache.apiKey,
+    finnhubKey: cache.finnhubKey,
+    quotes: cache.quotes,
+    logos: cache.logos,
+    fxRateInput: cache.fxRateInput,
+    quotesUpdatedAt: cache.quotesUpdatedAt,
+    quotesStatus: "idle",
+    quotesProgressLabel: null,
+    quotesError: null,
+    importPurchasesMessage: null,
+    txForm: { rowId: rows[0]?.id || "__new__", newTicker: "", newBroker: "", type: "buy", qty: "", price: "", date: todayYMD(), error: null, tickerSearchResults: [], tickerSearchStatus: "idle" },
+  };
+}
+
+function rowComputedValue(r) {
+  const fx = parseNum(state.posicoes.fxRateInput);
+  const price = parseNum(r.price);
+  const qty = parseNum(r.quantity);
+  if (!fx || !price) return null;
+  return qty * price * fx;
+}
+
+function timeAgoLabel(iso) {
+  if (!iso) return "";
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const mins = Math.round(diffMs / 60000);
+  if (mins < 1) return "actualizado ahora";
+  if (mins < 60) return `actualizado hace ${mins} min`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `actualizado hace ${hours}h`;
+  return `actualizado el ${fmtShortDate(iso)}`;
+}
+
+async function fetchQuotes() {
+  const p = state.posicoes;
+  const finnhubKey = (p.finnhubKey || "").trim();
+  const twelveKey = (p.apiKey || "").trim();
+  if (!finnhubKey && !twelveKey) {
+    p.quotesError = ["Ingresa al menos tu clave de Finnhub (para precios) o de Twelve Data (para el cambio)."];
+    render();
+    return;
+  }
+  p.quotesStatus = "loading";
+  p.quotesError = null;
+  p.quotesProgressLabel = "Buscando…";
+  render();
+
+  const tickers = [...new Set(state.portfolio.map((r) => r.ticker).filter(Boolean))];
+  const errors = [];
+  const newQuotes = { ...p.quotes };
+
+  // 1) USD/BRL via Twelve Data — just 1 symbol, far under its 8-credits/min free limit.
+  const fxPromise = (async () => {
+    if (!twelveKey) { errors.push("Sin clave de Twelve Data: el cambio no se actualizó."); return; }
+    try {
+      const url = `https://api.twelvedata.com/price?symbol=USD/BRL&apikey=${encodeURIComponent(twelveKey)}`;
+      const resp = await fetch(url);
+      const data = await resp.json();
+      if (data && data.status === "error") { errors.push(data.message || "Error al buscar el cambio en Twelve Data."); return; }
+      const num = parseFloat(data?.price);
+      if (Number.isFinite(num)) p.fxRateInput = String(num);
+      else errors.push("Sin cotización para USD/BRL.");
+    } catch (err) {
+      errors.push("No pude buscar el cambio en Twelve Data (sin conexión).");
+    }
+  })();
+
+  // 2) Stock prices via Finnhub — free plan allows 60 calls/min, so all tickers fetch
+  // concurrently in one go, no batching or waiting needed.
+  const newLogos = { ...p.logos };
+  const quotesPromise = (async () => {
+    if (!finnhubKey) { if (tickers.length) errors.push("Sin clave de Finnhub: los precios no se actualizaron."); return; }
+    await Promise.all(
+      tickers.map(async (sym) => {
+        try {
+          const url = `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(sym)}&token=${encodeURIComponent(finnhubKey)}`;
+          const resp = await fetch(url);
+          const data = await resp.json();
+          const price = Number(data?.c);
+          if (!Number.isFinite(price) || (price === 0 && Number(data?.pc) === 0)) {
+            errors.push(`Sin cotización para ${sym}.`);
+            return;
+          }
+          newQuotes[sym] = price;
+        } catch (err) {
+          errors.push(`No pude buscar ${sym} en Finnhub (sin conexión).`);
+        }
+        // Logo only needs fetching once per ticker ever — it doesn't change.
+        if (!newLogos[sym]) {
+          try {
+            const logoUrl = `https://finnhub.io/api/v1/stock/profile2?symbol=${encodeURIComponent(sym)}&token=${encodeURIComponent(finnhubKey)}`;
+            const logoResp = await fetch(logoUrl);
+            const logoData = await logoResp.json();
+            if (logoResp.ok && typeof logoData?.logo === "string" && logoData.logo) newLogos[sym] = logoData.logo;
+          } catch (_) {
+            // no logo, the colored-initial fallback will show instead — not worth surfacing as an error.
+          }
+        }
+      })
+    );
+  })();
+
+  await Promise.all([fxPromise, quotesPromise]);
+
+  p.quotes = newQuotes;
+  p.logos = newLogos;
+  p.quotesUpdatedAt = new Date().toISOString();
+  p.quotesError = errors.length ? errors : null;
+  p.rows = p.rows.map((r) => ({ ...r, price: typeof newQuotes[r.ticker] === "number" ? newQuotes[r.ticker] : r.price }));
+  p.dirty = true;
+  persistQuotesCache();
+
+  p.quotesStatus = "idle";
+  p.quotesProgressLabel = null;
+  render();
+}
+function resetHistoricoState() {
+  const earliestTx = state.transactions.length
+    ? state.transactions.reduce((min, t) => (t.date < min ? t.date : min), state.transactions[0].date)
+    : null;
+  const defaultFrom = earliestTx ? earliestTx.slice(0, 10) : new Date(Date.now() - 14 * 86400000).toISOString().slice(0, 10);
+  state.historico = {
+    confirmClear: false,
+    importStatus: "idle",
+    importProgressLabel: null,
+    importMessage: null,
+    importError: null,
+    editingId: null,
+    editReviewMap: {},
+    editFxInput: "0",
+    spxStatus: "idle",
+    spxPct: null,
+    spxError: null,
+    periodFilter: "all",
+    importFromDate: defaultFrom,
+    importToDate: todayYMD(),
+  };
+}
+
+async function compareSpx() {
+  const hs = state.historico;
+  const twelveKey = (state.posicoes.apiKey || "").trim();
+  if (!twelveKey) {
+    hs.spxError = "Configura tu clave de Twelve Data en la pestaña Posiciones primero.";
+    render();
+    return;
+  }
+  const sorted = [...state.history].sort((a, b) => new Date(a.date) - new Date(b.date));
+  if (!sorted.length) return;
+  hs.spxStatus = "loading";
+  hs.spxError = null;
+  render();
+  try {
+    const start = sorted[0].date.slice(0, 10);
+    const end = new Date().toISOString().slice(0, 10);
+    const url = `https://api.twelvedata.com/time_series?symbol=SPY&interval=1day&start_date=${start}&end_date=${end}&apikey=${encodeURIComponent(twelveKey)}`;
+    const resp = await fetch(url);
+    const data = await resp.json();
+    if (data && data.status === "error") throw new Error(data.message || "Error en Twelve Data");
+    if (!Array.isArray(data?.values) || data.values.length < 2) throw new Error("Sin suficientes datos del S&P 500 para ese período.");
+    const byDate = [...data.values].sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
+    const first = parseFloat(byDate[0].close);
+    const last = parseFloat(byDate[byDate.length - 1].close);
+    if (!first) throw new Error("Dato inválido");
+    hs.spxPct = ((last - first) / first) * 100;
+  } catch (err) {
+    hs.spxError = err.message || "No pude comparar con el S&P 500 (sin conexión).";
+  }
+  hs.spxStatus = "idle";
+  render();
+}
+
+function startEditEntry(id) {
+  const entry = state.history.find((h) => h.id === id);
+  if (!entry) return;
+  const map = {};
+  entry.rows.forEach((r) => { map[r.id] = String(r.changePct); });
+  state.historico.editingId = id;
+  state.historico.editReviewMap = map;
+  state.historico.editFxInput = String(entry.fxPct);
+  render();
+}
+
+function cancelEditEntry() {
+  state.historico.editingId = null;
+  render();
+}
+
+function saveEntryEdit() {
+  const hs = state.historico;
+  const entry = state.history.find((h) => h.id === hs.editingId);
+  if (!entry) return;
+  const fxPct = parseNum(hs.editFxInput);
+  const totalSaldoAtEntry = entry.rows.reduce((s, r) => s + parseNum(r.saldo), 0);
+  entry.rows = entry.rows.map((r) => {
+    const pct = parseNum(hs.editReviewMap[r.id]);
+    return { ...r, changePct: pct, gain: (parseNum(r.saldo) * pct) / 100 };
+  });
+  entry.priceTotal = entry.rows.reduce((s, r) => s + r.gain, 0);
+  entry.fxPct = fxPct;
+  entry.fxGain = (totalSaldoAtEntry * fxPct) / 100;
+  entry.total = entry.priceTotal + entry.fxGain;
+  persistHistory();
+  hs.editingId = null;
+  render();
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Charts (lightweight inline SVG, no dependencies)                      */
+/* ---------------------------------------------------------------------- */
+
+function fmtK(v) {
+  return `${(v / 1000).toFixed(1)}k`;
+}
+
+function buildChart({ type, data, valueKey, labelKey, height = 180 }) {
+  const W = 340, H = height;
+  const padL = 42, padR = 8, padT = 12, padB = 24;
+  const innerW = W - padL - padR;
+  const innerH = H - padT - padB;
+  const values = data.map((d) => d[valueKey]);
+  let min = Math.min(0, ...values);
+  let max = Math.max(0, ...values);
+  if (min === max) max = min + 1;
+  const range = max - min;
+  min -= range * 0.08;
+  max += range * 0.08;
+
+  const xStep = data.length > 1 ? innerW / (data.length - 1) : 0;
+  const xFor = (i) => (data.length > 1 ? padL + i * xStep : padL + innerW / 2);
+  const yFor = (v) => padT + innerH - ((v - min) / (max - min)) * innerH;
+  const zeroY = yFor(0);
+
+  let gridLines = "";
+  const gridCount = 4;
+  for (let g = 0; g <= gridCount; g++) {
+    const gy = padT + (innerH / gridCount) * g;
+    const val = max - (g / gridCount) * (max - min);
+    gridLines += `<line class="chart-grid" x1="${padL}" y1="${gy}" x2="${W - padR}" y2="${gy}" stroke="#1C2128" stroke-width="1"/>`;
+    gridLines += `<text x="${padL - 6}" y="${gy + 3}" text-anchor="end">${fmtK(val)}</text>`;
+  }
+
+  const maxLabels = 6;
+  const skip = Math.max(1, Math.ceil(data.length / maxLabels));
+  let xLabels = "";
+  data.forEach((d, i) => {
+    if (i % skip === 0 || i === data.length - 1) {
+      xLabels += `<text x="${xFor(i)}" y="${H - 4}" text-anchor="middle">${escapeHtml(d[labelKey])}</text>`;
+    }
+  });
+
+  let body = "";
+  if (type === "line") {
+    const points = data.map((d, i) => `${xFor(i)},${yFor(d[valueKey])}`).join(" ");
+    body += `<polyline points="${points}" fill="none" stroke="#1FD8A4" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+    data.forEach((d, i) => {
+      body += `<circle cx="${xFor(i)}" cy="${yFor(d[valueKey])}" r="2.2" fill="#1FD8A4"/>`;
+    });
+  } else if (type === "bar") {
+    const bw = Math.min(18, (innerW / data.length) * 0.6);
+    data.forEach((d, i) => {
+      const v = d[valueKey];
+      const y = Math.min(yFor(v), zeroY);
+      const h = Math.max(2, Math.abs(yFor(v) - zeroY));
+      const x = xFor(i) - bw / 2;
+      const color = v >= 0 ? "#1FD8A4" : "#FF6B6B";
+      body += `<rect x="${x}" y="${y}" width="${bw}" height="${h}" rx="3" fill="${color}"/>`;
+    });
+    body += `<line x1="${padL}" y1="${zeroY}" x2="${W - padR}" y2="${zeroY}" stroke="#2A313B" stroke-width="1"/>`;
+  }
+
+  return `<svg class="chart-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" width="100%" height="${H}" role="img" aria-label="Gráfico">${gridLines}${body}${xLabels}</svg>`;
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Render: header / tabbar                                               */
+/* ---------------------------------------------------------------------- */
+
+function renderTickerTape(portfolio, lastEntry) {
+  const logos = state.posicoes?.logos || {};
+  const uniqueTickers = [...new Set(portfolio.map((p) => p.ticker))];
+  const itemsByTicker = {};
+  if (lastEntry) lastEntry.rows.forEach((r) => { itemsByTicker[r.ticker] = r.changePct; });
+  const tapeItems = uniqueTickers.map((t) => ({ ticker: t, pct: itemsByTicker[t] }));
+  if (lastEntry) tapeItems.push({ ticker: "USD/BRL", pct: lastEntry.fxPct });
+  const doubled = [...tapeItems, ...tapeItems];
+  const itemsHtml = doubled
+    .map(
+      (it) =>
+        `<span class="tape-item">${avatarHtml(it.ticker, logos[it.ticker], 18)}<b>${escapeHtml(it.ticker)}</b>${
+          typeof it.pct === "number" ? `<span class="${it.pct >= 0 ? "up" : "down"}">${fmtPct(it.pct)}</span>` : `<span class="muted">—</span>`
+        }</span>`
+    )
+    .join("");
+  return `<div class="tape"><div class="tape-track">${itemsHtml}</div></div>`;
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Render: HOJE tab                                                       */
+/* ---------------------------------------------------------------------- */
+
+function renderHoje() {
+  const h = state.hoje;
+  let inner = "";
+
+  if (h.status === "idle") {
+    const fetchLabel = h.fetchStatus === "loading" ? (h.fetchProgressLabel || "Buscando…") : "Buscar variación automáticamente";
+    inner = `
+      <div class="card upload-card">
+        ${h.error ? `<div class="banner banner-warn">${icon("alert-triangle", 15)} ${escapeHtml(h.error)}</div>` : ""}
+        ${isMarketClosedToday() ? `<div class="banner banner-warn">${icon("alert-triangle", 15)} Hoy ${marketClosedReason()}: el mercado está cerrado. La búsqueda automática traería el último cierre disponible, no el de hoy.</div>` : ""}
+        ${icon("camera", 28, "muted")}
+        <p class="upload-text">Registra la variación de hoy buscando las cotizaciones automáticamente, pegando los números que ya tienes, o llenando manualmente.</p>
+        <button class="btn btn-primary" data-action="fetch-live-day-change" ${h.fetchStatus === "loading" ? "disabled" : ""}>
+          ${icon("refresh", 15, h.fetchStatus === "loading" ? "spin" : "")} ${fetchLabel}
+        </button>
+        <p class="upload-hint">Usa las claves de Finnhub (acciones) y Twelve Data (cambio) configuradas en la pestaña Posiciones.</p>
+        <div class="divider-text">o</div>
+        <textarea class="paste-area" data-bind="paste" placeholder="Pega aquí: PG:0.86 KO:0.11 WMB:0.64 USB:2.27 TM:0 ARCC:1.00 ARKB:0 USDBRL:-0.73">${escapeHtml(h.pasteText)}</textarea>
+        <button class="btn btn-primary" data-action="parse-pasted" ${h.pasteText.trim() ? "" : "disabled"}>Procesar datos pegados</button>
+        <p class="upload-hint">Consejo: copia los porcentajes de variación del día de cada activo y del dólar (USDBRL) y pega todo de una vez.</p>
+        <div class="divider-text">o</div>
+        <button class="btn btn-ghost" data-action="start-manual">${icon("pencil", 15)} Llenar manualmente</button>
+        <label class="checkbox-row">
+          <input type="checkbox" data-bind="quickSave" ${h.quickSave ? "checked" : ""}>
+          Guardar automáticamente después de buscar (sin revisar)
+        </label>
+      </div>`;
+  } else if (h.status === "review" || h.status === "result") {
+    inner = renderHojeReviewResult();
+  } else if (h.status === "saved") {
+    inner = `
+      <div class="card center-card">
+        ${icon("check-circle", 28, "up")}
+        <p>Resultado de hoy guardado en el historial.</p>
+        <button class="btn btn-primary" data-action="new-entry">Nuevo registro</button>
+      </div>`;
+  }
+
+  return `<div class="stack">${inner}</div>`;
+}
+
+function renderHojeReviewResult() {
+  const h = state.hoje;
+  const portfolio = [...state.portfolio].sort((a, b) => parseNum(b.saldo) - parseNum(a.saldo));
+
+  const rowsHtml = portfolio
+    .map((p) => {
+      const row = h.result ? h.result.rows.find((r) => r.id === p.id) : null;
+      const pctCell =
+        h.status === "review"
+          ? `<input class="input-cell" inputmode="decimal" data-bind="review" data-id="${p.id}" value="${escapeAttr(h.reviewMap[p.id] ?? "0")}">`
+          : `<span class="${row.changePct >= 0 ? "up" : "down"}">${fmtPct(row.changePct)}</span>`;
+      const gainCell = h.status === "result" ? `<td class="num ${row.gain >= 0 ? "up" : "down"}">${fmtBRL(row.gain)}</td>` : "";
+      return `<tr>
+        <td><div class="ticker-cell">${avatarHtml(p.ticker, state.posicoes?.logos?.[p.ticker], 20)}<span><b>${escapeHtml(p.ticker)}</b><span class="muted small"> · ${escapeHtml(p.broker)}</span></span></div></td>
+        <td class="num">${pctCell}</td>
+        ${gainCell}
+      </tr>`;
+    })
+    .join("");
+
+  const fxPctCell =
+    h.status === "review"
+      ? `<input class="input-cell" inputmode="decimal" data-bind="fx" value="${escapeAttr(h.fxPctInput)}">`
+      : `<span class="${h.result.fxPct >= 0 ? "up" : "down"}">${fmtPct(h.result.fxPct)}</span>`;
+  const fxGainCell = h.status === "result" ? `<td class="num ${h.result.fxGain >= 0 ? "up" : "down"}">${fmtBRL(h.result.fxGain)}</td>` : "";
+
+  const errorBanner = h.error ? `<div class="banner banner-warn">${icon("alert-triangle", 15)} ${escapeHtml(h.error)}</div>` : "";
+  const headerExtra = h.status === "result" ? `<button class="icon-btn" data-action="edit-review" title="Editar valores">${icon("pencil", 14)}</button>` : "";
+
+  const tableHtml = `
+    <div class="table-scroll"><table class="table">
+      <thead><tr><th>Activo</th><th class="num">% día</th>${h.status === "result" ? '<th class="num">Resultado</th>' : ""}</tr></thead>
+      <tbody>
+        ${rowsHtml}
+        <tr class="row-fx">
+          <td><b>USD/BRL</b><span class="muted small"> · cambio del día</span></td>
+          <td class="num">${fxPctCell}</td>
+          ${fxGainCell}
+        </tr>
+      </tbody>
+    </table></div>`;
+
+  let footer = "";
+  if (h.status === "review") {
+    footer = `
+      <div class="row-actions">
+        <button class="btn btn-ghost" data-action="cancel-review">${icon("x", 15)} Cancelar</button>
+        <button class="btn btn-primary" data-action="compute">Calcular resultado</button>
+      </div>`;
+  } else {
+    const r = h.result;
+    footer = `
+      <div class="summary">
+        <div class="summary-line"><span>Variación por precios</span><span class="${r.priceTotal >= 0 ? "up" : "down"}">${fmtBRL(r.priceTotal)}</span></div>
+        <div class="summary-line"><span>Efecto dólar (${fmtPct(r.fxPct)})</span><span class="${r.fxGain >= 0 ? "up" : "down"}">${fmtBRL(r.fxGain)}</span></div>
+        <div class="summary-line summary-total"><span>Total estimado</span><span class="${r.total >= 0 ? "up" : "down"}">${fmtBRL(r.total)}</span></div>
+      </div>
+      <label class="checkbox-row">
+        <input type="checkbox" data-bind="updateSaldo" ${h.updateSaldo ? "checked" : ""}>
+        Actualizar saldo base de cada posición con el resultado de hoy
+      </label>
+      <div class="row-actions">
+        <button class="btn btn-ghost" data-action="discard-result">Descartar</button>
+        <button class="btn btn-primary" data-action="save-history">${icon("save", 15)} Guardar en el historial</button>
+      </div>`;
+  }
+
+  return `<div class="card">
+    ${errorBanner}
+    <div class="card-title-row"><h2 class="card-title">Variación del día por activo</h2>${headerExtra}</div>
+    ${tableHtml}
+    ${footer}
+  </div>`;
+}
+
+function startManual() {
+  const map = {};
+  state.portfolio.forEach((p) => (map[p.id] = "0"));
+  state.hoje.reviewMap = map;
+  state.hoje.fxPctInput = "0";
+  state.hoje.error = null;
+  state.hoje.status = "review";
+  render();
+}
+
+async function fetchLiveDayChange() {
+  const h = state.hoje;
+  const finnhubKey = (state.posicoes.finnhubKey || "").trim();
+  const twelveKey = (state.posicoes.apiKey || "").trim();
+  if (!finnhubKey && !twelveKey) {
+    h.error = "Configura tu clave de Finnhub (precios) o de Twelve Data (cambio) en la pestaña Posiciones primero.";
+    render();
+    return;
+  }
+  h.fetchStatus = "loading";
+  h.error = null;
+  h.fetchProgressLabel = "Buscando…";
+  render();
+
+  const tickers = [...new Set(state.portfolio.map((p) => p.ticker).filter(Boolean))];
+  const errors = [];
+  const pctByTicker = {};
+  let fxPct = null;
+
+  // Stocks via Finnhub — 60 calls/min on the free plan, so every ticker fetches at once.
+  const stocksPromise = (async () => {
+    if (!finnhubKey) { if (tickers.length) errors.push("Sin clave de Finnhub: no se buscó la variación de las acciones."); return; }
+    await Promise.all(
+      tickers.map(async (sym) => {
+        try {
+          const url = `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(sym)}&token=${encodeURIComponent(finnhubKey)}`;
+          const resp = await fetch(url);
+          const data = await resp.json();
+          const pct = Number(data?.dp);
+          if (!Number.isFinite(pct) || (Number(data?.c) === 0 && Number(data?.pc) === 0)) {
+            errors.push(`Sin variación para ${sym}.`);
+            return;
+          }
+          pctByTicker[sym] = pct;
+        } catch (err) {
+          errors.push(`No pude buscar ${sym} en Finnhub (sin conexión).`);
+        }
+      })
+    );
+  })();
+
+  // USD/BRL via Twelve Data — just 1 symbol, far under its free per-minute limit.
+  const fxPromise = (async () => {
+    if (!twelveKey) { errors.push("Sin clave de Twelve Data: no se buscó la variación del cambio."); return; }
+    try {
+      const url = `https://api.twelvedata.com/quote?symbol=USD/BRL&apikey=${encodeURIComponent(twelveKey)}`;
+      const resp = await fetch(url);
+      const data = await resp.json();
+      if (data && data.status === "error") { errors.push(data.message || "Error al buscar la variación del cambio en Twelve Data."); return; }
+      const pct = parseFloat(data?.percent_change);
+      if (Number.isFinite(pct)) fxPct = pct;
+      else errors.push("Sin variación para USD/BRL.");
+    } catch (err) {
+      errors.push("No pude buscar la variación del cambio en Twelve Data (sin conexión).");
+    }
+  })();
+
+  await Promise.all([stocksPromise, fxPromise]);
+  h.fetchProgressLabel = null;
+
+  if (isMarketClosedToday()) {
+    errors.unshift(`Hoy ${marketClosedReason()}: el mercado de EE. UU. está cerrado. Estos valores son del último cierre disponible, no de hoy.`);
+  }
+
+  const map = {};
+  state.portfolio.forEach((p) => {
+    const v = pctByTicker[p.ticker];
+    map[p.id] = typeof v === "number" ? String(v) : "0";
+  });
+  h.reviewMap = map;
+  h.fxPctInput = fxPct !== null ? String(fxPct) : "0";
+  h.error = errors.length ? errors.join(" ") : null;
+  h.fetchStatus = "idle";
+  h.status = "review";
+  if (h.quickSave && !h.error) {
+    compute();
+    saveHistoryAction();
+  } else {
+    render();
+  }
+}
+
+function parsePasted() {
+  const text = state.hoje.pasteText;
+  const regex = /([A-Za-zÀ-ÿ\/]{2,12})\s*[:=]\s*([+-]?\d+(?:[.,]\d+)?)\s*%?/g;
+  const found = {};
+  let m;
+  while ((m = regex.exec(text)) !== null) found[m[1].toUpperCase()] = parseNum(m[2]);
+  if (!Object.keys(found).length) {
+    state.hoje.error = "No pude reconocer ningún valor en ese texto. Revisa el formato e intenta de nuevo.";
+    render();
+    return;
+  }
+  const map = {};
+  state.portfolio.forEach((p) => {
+    const v = found[p.ticker.toUpperCase()];
+    map[p.id] = typeof v === "number" ? String(v) : "0";
+  });
+  state.hoje.reviewMap = map;
+  const fx = found["USDBRL"] ?? found["USD/BRL"] ?? found["USD"];
+  state.hoje.fxPctInput = typeof fx === "number" ? String(fx) : "0";
+  state.hoje.error = null;
+  state.hoje.status = "review";
+  if (state.hoje.quickSave) {
+    compute();
+    saveHistoryAction();
+  } else {
+    render();
+  }
+}
+
+function compute() {
+  const h = state.hoje;
+  const rows = state.portfolio.map((p) => {
+    const pct = parseNum(h.reviewMap[p.id]);
+    const saldo = parseNum(p.saldo);
+    return { id: p.id, ticker: p.ticker, broker: p.broker, saldo, changePct: pct, gain: (saldo * pct) / 100 };
+  });
+  const priceTotal = rows.reduce((s, r) => s + r.gain, 0);
+  const fxPct = parseNum(h.fxPctInput);
+  const totalSaldo = state.portfolio.reduce((s, p) => s + parseNum(p.saldo), 0);
+  const fxGain = (totalSaldo * fxPct) / 100;
+  h.result = { rows, priceTotal, fxPct, fxGain, total: priceTotal + fxGain };
+  h.status = "result";
+  render();
+}
+
+function saveHistoryAction() {
+  const h = state.hoje;
+  if (!h.result) return;
+  const entry = {
+    id: uid(),
+    date: new Date().toISOString(),
+    rows: h.result.rows,
+    fxPct: h.result.fxPct,
+    fxGain: h.result.fxGain,
+    priceTotal: h.result.priceTotal,
+    total: h.result.total,
+  };
+  state.history = [...state.history, entry];
+  persistHistory();
+
+  if (h.updateSaldo) {
+    state.portfolio = state.portfolio.map((p) => {
+      const row = h.result.rows.find((r) => r.id === p.id);
+      if (!row) return p;
+      const newSaldo = row.saldo + row.gain + (row.saldo * h.result.fxPct) / 100;
+      return { ...p, saldo: Math.round(newSaldo * 100) / 100 };
+    });
+    persistPortfolio();
+  }
+  h.status = "saved";
+  render();
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Render: POSIÇÕES tab                                                   */
+/* ---------------------------------------------------------------------- */
+
+function rowEffectiveValue(r) {
+  const computed = rowComputedValue(r);
+  return computed !== null ? computed : parseNum(r.saldo) || 0;
+}
+
+function rowEffectiveValueUsd(r) {
+  const price = parseNum(r.price);
+  const qty = parseNum(r.quantity);
+  if (price) return qty * price;
+  const fx = parseNum(state.posicoes?.fxRateInput);
+  const saldo = parseNum(r.saldo) || 0;
+  return fx ? saldo / fx : 0;
+}
+
+function updateRowValueCell(id) {
+  const row = state.posicoes.rows.find((r) => r.id === id);
+  const cell = document.getElementById(`value-cell-${id}`);
+  if (!row || !cell) return;
+  const computed = rowComputedValue(row);
+  cell.innerHTML =
+    computed !== null
+      ? `<span class="computed-value" id="value-${id}">${fmtBRL(computed)}</span>`
+      : `<input class="input-cell" inputmode="decimal" data-bind="saldo" data-id="${id}" value="${escapeAttr(row.saldo)}">`;
+}
+
+function updateLiveTotal() {
+  const liveTotal = state.posicoes.rows.reduce((s, r) => s + rowEffectiveValue(r), 0);
+  const span = document.getElementById("live-total");
+  if (span) span.textContent = fmtBRL(liveTotal);
+  const headerSpan = document.getElementById("header-total-value");
+  if (headerSpan) headerSpan.textContent = fmtBRL(liveTotal);
+}
+
+function renderUnrealized(rows) {
+  const withCost = rows.filter((r) => typeof r.avgCost === "number" && r.avgCost > 0);
+  if (!withCost.length) return "";
+  const fx = parseNum(state.posicoes.fxRateInput);
+
+  let totalCostUsd = 0;
+  let totalNowUsd = 0;
+  let totalCostBrl = 0;
+  let totalNowBrl = 0;
+  let anyBrlGap = false;
+  const itemsHtml = withCost
+    .map((r) => {
+      const price = parseNum(r.price);
+      const qty = parseNum(r.quantity);
+      const costBasisUsd = r.avgCost * qty;
+      const hasPrice = price > 0;
+      const nowValueUsd = hasPrice ? price * qty : costBasisUsd;
+      totalCostUsd += costBasisUsd;
+      totalNowUsd += nowValueUsd;
+      const gainUsd = nowValueUsd - costBasisUsd;
+      const pct = costBasisUsd ? (gainUsd / costBasisUsd) * 100 : 0;
+      const hasCostBrl = typeof r.avgCostBrl === "number" && Number.isFinite(r.avgCostBrl);
+      const costBasisBrl = hasCostBrl ? r.avgCostBrl * qty : fx ? costBasisUsd * fx : null;
+      const nowValueBrl = hasPrice && fx ? price * qty * fx : null;
+      const gainBrl = costBasisBrl !== null && nowValueBrl !== null ? nowValueBrl - costBasisBrl : null;
+      const pctDisplay = gainBrl !== null && costBasisBrl ? (gainBrl / costBasisBrl) * 100 : pct;
+      if (gainBrl !== null) { totalCostBrl += costBasisBrl; totalNowBrl += nowValueBrl; }
+      else if (hasPrice) anyBrlGap = true;
+      return `<tr>
+        <td><div class="ticker-cell">${avatarHtml(r.ticker, state.posicoes?.logos?.[r.ticker], 20)}<span><b>${escapeHtml(r.ticker)}</b></span></div></td>
+        <td class="num small">$${r.avgCost.toFixed(2)}</td>
+        <td class="num small">${hasPrice ? "$" + price.toFixed(2) : "—"}</td>
+        <td class="num ${hasPrice ? (gainUsd >= 0 ? "up" : "down") : "muted"}"><b>${hasPrice ? (gainBrl !== null ? fmtBRL(gainBrl) : `US$ ${gainUsd.toFixed(2)}`) : "—"}</b>${hasPrice ? `<br><span class="small">${fmtPct(pctDisplay)}</span>` : ""}</td>
+      </tr>`;
+    })
+    .join("");
+
+  const totalGainUsd = totalNowUsd - totalCostUsd;
+  const totalPct = totalCostUsd ? (totalGainUsd / totalCostUsd) * 100 : 0;
+  const totalGainBrl = totalCostBrl ? totalNowBrl - totalCostBrl : fx ? totalGainUsd * fx : null;
+  const totalPctBrl = totalCostBrl ? ((totalNowBrl - totalCostBrl) / totalCostBrl) * 100 : totalPct;
+
+  return `<div class="card">
+    <div class="card-title-row">
+      <h2 class="card-title">Ganancia/pérdida no realizada</h2>
+      <span class="${(totalGainBrl ?? totalGainUsd) >= 0 ? "up" : "down"} small"><b>${totalGainBrl !== null ? fmtBRL(totalGainBrl) : `US$ ${totalGainUsd.toFixed(2)}`} (${fmtPct(totalCostBrl ? totalPctBrl : totalPct)})</b></span>
+    </div>
+    ${anyBrlGap ? `<p class="muted small">Importa tu historial de compras/ventas (CSV: columnas symbol, date, type, qty, price, y opcionalmente fx con el cambio USD/BRL exacto de esa operación) para calcular el precio promedio de compra de cada activo y ver la ganancia no realizada.</p>` : ""}
+    <p class="muted small">Compara el precio promedio de compra (importado) con el precio actual de cada activo, en dólares. ${fx ? "Convertido a reales con el cambio configurado." : "Configura el cambio USD/BRL arriba para verlo también en reales."}</p>
+    <div class="table-scroll"><table class="table">
+      <thead><tr><th>Activo</th><th class="num">Compra</th><th class="num">Actual</th><th class="num">Ganancia</th></tr></thead>
+      <tbody>${itemsHtml}</tbody>
+    </table></div>
+  </div>`;
+}
+
+function renderBreakdown(rows) {
+  const total = rows.reduce((s, r) => s + rowEffectiveValue(r), 0);
+  if (!total) return "";
+
+  const bar = (label, value, color) => {
+    const pct = total ? (value / total) * 100 : 0;
+    return `<div class="breakdown-row">
+      <div class="breakdown-label">${escapeHtml(label)}</div>
+      <div class="breakdown-bar-track"><div class="breakdown-bar-fill" style="width:${Math.max(pct, 1).toFixed(1)}%;background:${color}"></div></div>
+      <div class="breakdown-pct">${pct.toFixed(1)}%</div>
+    </div>`;
+  };
+
+  const byTicker = {};
+  rows.forEach((r) => { byTicker[r.ticker || "—"] = (byTicker[r.ticker || "—"] || 0) + rowEffectiveValue(r); });
+  const tickerRows = Object.entries(byTicker)
+    .sort((a, b) => b[1] - a[1])
+    .map(([t, v]) => bar(t, v, avatarColor(t)))
+    .join("");
+
+  const byBroker = {};
+  rows.forEach((r) => { byBroker[r.broker || "—"] = (byBroker[r.broker || "—"] || 0) + rowEffectiveValue(r); });
+  const brokerRows = Object.entries(byBroker)
+    .sort((a, b) => b[1] - a[1])
+    .map(([b, v]) => bar(b, v, avatarColor(b)))
+    .join("");
+
+  return `<div class="card">
+    <h2 class="card-title">Distribución de la cartera</h2>
+    <p class="muted small breakdown-subtitle">Por activo</p>
+    ${tickerRows}
+    <p class="muted small breakdown-subtitle">Por corretora</p>
+    ${brokerRows}
+  </div>`;
+}
+
+function renderPosicoes() {
+  const p = state.posicoes;
+  const rows = p.rows;
+  const txForm = p.txForm;
+  const liveTotal = rows.reduce((s, r) => s + rowEffectiveValue(r), 0);
+  const fx = parseNum(p.fxRateInput);
+
+  const rowsHtml = rows
+    .map((r, i) => {
+      const computed = rowComputedValue(r);
+      const valueCell =
+        computed !== null
+          ? `<span class="computed-value" id="value-${r.id}">${fmtBRL(computed)}</span>`
+          : `<input class="input-cell" inputmode="decimal" data-bind="saldo" data-id="${r.id}" value="${escapeAttr(r.saldo)}">`;
+      return `
+      <tr>
+        <td>
+          <div class="move-cell">
+            <button class="icon-btn move-btn" data-action="move-row-up" data-id="${r.id}" title="Subir" ${i === 0 ? "disabled" : ""}>${icon("chevron-up", 14)}</button>
+            <button class="icon-btn move-btn" data-action="move-row-down" data-id="${r.id}" title="Bajar" ${i === rows.length - 1 ? "disabled" : ""}>${icon("chevron-down", 14)}</button>
+          </div>
+        </td>
+        <td><div class="ticker-cell">${avatarHtml(r.ticker, p.logos?.[r.ticker], 22)}<input class="input-cell" data-bind="ticker" data-id="${r.id}" value="${escapeAttr(r.ticker)}" placeholder="PG"></div></td>
+        <td><input class="input-cell" data-bind="broker" data-id="${r.id}" value="${escapeAttr(r.broker)}" placeholder="Nomad"></td>
+        <td class="num"><input class="input-cell" inputmode="decimal" data-bind="quantity" data-id="${r.id}" value="${escapeAttr(r.quantity)}"></td>
+        <td class="num"><input class="input-cell" inputmode="decimal" data-bind="price" data-id="${r.id}" value="${escapeAttr(r.price)}" placeholder="0,00"></td>
+        <td class="num" id="value-cell-${r.id}">${valueCell}</td>
+        <td><button class="icon-btn" data-action="remove-row" data-id="${r.id}" title="Eliminar">${icon("trash", 14)}</button></td>
+      </tr>`;
+    })
+    .join("");
+
+  return `
+    <div class="stack">
+      <div class="card">
+        <div class="card-title-row">
+          <h2 class="card-title">Cotizaciones automáticas</h2>
+        </div>
+        ${p.quotesError ? `<div class="banner banner-warn">${icon("alert-triangle", 15)} ${
+          p.quotesError.length > 1
+            ? `<ul class="error-list">${p.quotesError.map((e) => `<li>${escapeHtml(e)}</li>`).join("")}</ul>`
+            : escapeHtml(p.quotesError[0])
+        }</div>` : ""}
+        <div class="quotes-bar">
+          <div class="quotes-fx">
+            <span class="muted small">Cambio USD/BRL</span>
+            <input class="input-cell input-fx" inputmode="decimal" data-bind="fxRate" value="${escapeAttr(p.fxRateInput)}" placeholder="0,00">
+          </div>
+          <button class="btn btn-ghost btn-sm" data-action="fetch-quotes" ${p.quotesStatus === "loading" ? "disabled" : ""}>
+            ${icon("refresh", 13, p.quotesStatus === "loading" ? "spin" : "")} ${p.quotesStatus === "loading" ? (p.quotesProgressLabel || "Buscando…") : "Actualizar cotizaciones"}
+          </button>
+        </div>
+        <p class="quotes-updated small muted">${p.quotesUpdatedAt ? timeAgoLabel(p.quotesUpdatedAt) : "aún no buscado"}</p>
+        <div class="api-key-row">
+          <input class="input-cell input-apikey" data-bind="finnhubKey" value="${escapeAttr(p.finnhubKey)}" placeholder="Clave de API de Finnhub (precios)">
+          <a class="muted small" href="https://finnhub.io/register" target="_blank" rel="noopener">Crear clave gratis ↗</a>
+        </div>
+        <div class="api-key-row">
+          <input class="input-cell input-apikey" data-bind="apiKey" value="${escapeAttr(p.apiKey)}" placeholder="Clave de API de Twelve Data (cambio)">
+          <a class="muted small" href="https://twelvedata.com/pricing" target="_blank" rel="noopener">Crear clave gratis ↗</a>
+        </div>
+        <p class="upload-hint">El precio (US$) de cada posición se completa automáticamente al actualizar las cotizaciones, pero puedes escribir encima si quieres. Sin precio y cambio, el valor vuelve a ser editable manualmente.</p>
+        <p class="upload-hint">Los precios de las acciones vienen de Finnhub (60 consultas/min gratis) y el cambio USD/BRL de Twelve Data (8/min, pero acá solo se pide ese único símbolo).</p>
+      </div>
+
+      <div class="card">
+        <div class="card-title-row">
+          <h2 class="card-title">Posiciones de la cartera</h2>
+          <span class="muted small" id="live-total">${fmtBRL(liveTotal)}</span>
+        </div>
+        <div class="table-scroll"><table class="table table-editable">
+          <thead><tr><th></th><th>Ticker</th><th>Broker</th><th class="num">Cant.</th><th class="num">Precio (US$)</th><th class="num">Valor (R$)</th><th></th></tr></thead>
+          <tbody>${rowsHtml}</tbody>
+        </table></div>
+        <div class="row-actions">
+          <button class="btn btn-ghost" data-action="add-row">${icon("plus", 15)} Agregar posición</button>
+          <button class="btn btn-primary" data-action="save-positions" ${state.posicoes.dirty ? "" : "disabled"}>${icon("save", 15)} Guardar posiciones</button>
+        </div>
+      </div>
+
+      ${renderBreakdown(rows)}
+
+      ${renderUnrealized(rows)}
+
+      <div class="card">
+        <h2 class="card-title">Precio de compra</h2>
+        <p class="muted small">Importa tu historial de compras/ventas (CSV exportado de TradingView: columnas symbol, date, type, qty, price) para calcular el precio promedio de compra de cada activo y ver la ganancia no realizada.</p>
+        ${state.posicoes.importPurchasesMessage ? `<div class="banner banner-ok">${icon("check-circle", 15)} ${escapeHtml(state.posicoes.importPurchasesMessage)}</div>` : ""}
+        <div class="row-actions">
+          <button class="btn btn-ghost" data-action="trigger-import-purchases">${icon("refresh", 15)} Importar historial de compras (CSV)</button>
+        </div>
+        <input type="file" id="import-purchases-input" accept=".csv,text/csv" hidden>
+
+        <div class="tx-form">
+          <p class="muted small breakdown-subtitle">O agrega una compra o venta nueva</p>
+          ${txForm.error ? `<div class="banner banner-warn">${icon("alert-triangle", 15)} ${escapeHtml(txForm.error)}</div>` : ""}
+          <select class="input-cell tx-select" data-bind="txRowId">
+            ${rows.map((r) => `<option value="${r.id}" ${txForm.rowId === r.id ? "selected" : ""}>${escapeHtml(r.ticker || "(sin ticker)")} · ${escapeHtml(r.broker || "—")}</option>`).join("")}
+            <option value="__new__" ${txForm.rowId === "__new__" ? "selected" : ""}>+ Nueva posición</option>
+          </select>
+          ${
+            txForm.rowId === "__new__"
+              ? `<div class="tx-form-row">
+                  <div class="tx-ticker-wrap">
+                    <input class="input-cell" data-bind="txNewTicker" placeholder="Ticker o nombre (ej. Apple)" value="${escapeAttr(txForm.newTicker)}" autocomplete="off">
+                    <div id="ticker-search-results" class="ticker-search-results"></div>
+                  </div>
+                  <input class="input-cell" data-bind="txNewBroker" placeholder="Corretora" value="${escapeAttr(txForm.newBroker)}">
+                </div>`
+              : ""
+          }
+          <div class="tx-form-row">
+            <select class="input-cell" data-bind="txType">
+              <option value="buy" ${txForm.type === "buy" ? "selected" : ""}>Compra</option>
+              <option value="sell" ${txForm.type === "sell" ? "selected" : ""}>Venta</option>
+            </select>
+            <input class="input-cell" inputmode="decimal" data-bind="txQty" placeholder="Cantidad" value="${escapeAttr(txForm.qty)}">
+            <input class="input-cell" inputmode="decimal" data-bind="txPrice" placeholder="Precio US$" value="${escapeAttr(txForm.price)}">
+          </div>
+          <input class="input-cell tx-date" type="date" data-bind="txDate" value="${escapeAttr(txForm.date)}" style="text-align:left">
+          <div class="row-actions">
+            <button class="btn btn-primary" data-action="add-transaction">${icon("plus", 15)} Agregar transacción</button>
+          </div>
+          <p class="upload-hint">Actualiza la cantidad y recalcula el precio promedio de compra de esa posición (método costo promedio). Recuerda tocar "Guardar posiciones" después para que quede guardado.</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2 class="card-title">Copia de seguridad</h2>
+        <p class="muted small">Descarga un archivo con tus posiciones, historial y claves, para no perderlos si borras los datos del sitio. Lo mismo sirve para pasar todo a otro celular.</p>
+        <div class="row-actions">
+          <button class="btn btn-ghost" data-action="export-backup">${icon("download", 15)} Exportar datos</button>
+          <button class="btn btn-ghost" data-action="trigger-import-backup">${icon("refresh", 15)} Importar datos</button>
+        </div>
+        <input type="file" id="import-backup-input" accept="application/json" hidden>
+      </div>
+    </div>`;
+}
+
+function addRow() {
+  state.posicoes.rows = [...state.posicoes.rows, { id: uid(), ticker: "", broker: "", quantity: 0, price: "", saldo: 0 }];
+  state.posicoes.dirty = true;
+  render();
+}
+
+function removeRow(id) {
+  state.posicoes.rows = state.posicoes.rows.filter((r) => r.id !== id);
+  state.posicoes.dirty = true;
+  render();
+}
+
+function moveRow(id, direction) {
+  const rows = state.posicoes.rows;
+  const i = rows.findIndex((r) => r.id === id);
+  const j = i + direction;
+  if (i === -1 || j < 0 || j >= rows.length) return;
+  [rows[i], rows[j]] = [rows[j], rows[i]];
+  state.posicoes.dirty = true;
+  render();
+}
+
+function savePositions() {
+  const cleaned = state.posicoes.rows
+    .filter((r) => String(r.ticker).trim())
+    .map((r) => ({
+      ...r,
+      ticker: String(r.ticker).trim().toUpperCase(),
+      broker: String(r.broker).trim(),
+      quantity: parseNum(r.quantity),
+      price: parseNum(r.price) || 0,
+      saldo: Math.round(rowEffectiveValue(r) * 100) / 100,
+    }));
+  state.portfolio = cleaned;
+  persistPortfolio();
+  state.posicoes.rows = cleaned.map((p) => ({ ...p }));
+  state.posicoes.dirty = false;
+  render();
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Render: HISTÓRICO tab                                                  */
+/* ---------------------------------------------------------------------- */
+
+function renderHistorico() {
+  const hs = state.historico;
+  const importBtnLabel = hs.importStatus === "loading" ? (hs.importProgressLabel || "Buscando…") : "Importar histórico real";
+  const importDateRangeHtml = `
+    <div class="tx-form-row import-date-row">
+      <div class="tx-ticker-wrap">
+        <span class="muted small">Desde</span>
+        <input class="input-cell tx-date" type="date" data-bind="importFromDate" value="${escapeAttr(hs.importFromDate)}" style="text-align:left">
+      </div>
+      <div class="tx-ticker-wrap">
+        <span class="muted small">Hasta</span>
+        <input class="input-cell tx-date" type="date" data-bind="importToDate" value="${escapeAttr(hs.importToDate)}" style="text-align:left">
+      </div>
+    </div>`;
+  const importBanner = hs.importError
+    ? `<div class="banner banner-warn">${icon("alert-triangle", 15)} ${
+        hs.importError.length > 1 ? `<ul class="error-list">${hs.importError.map((e) => `<li>${escapeHtml(e)}</li>`).join("")}</ul>` : escapeHtml(hs.importError[0])
+      }</div>`
+    : hs.importMessage
+    ? `<div class="banner banner-ok">${icon("check-circle", 15)} ${escapeHtml(hs.importMessage)}</div>`
+    : "";
+
+  if (!state.history.length) {
+    return `
+      <div class="card empty-state">
+        <p>Todavía no hay resultados guardados.</p>
+        <p class="muted small">Calcula el resultado de hoy en la pestaña "Hoy" y guárdalo para empezar el historial, importa los últimos días reales, o prueba la app con datos ficticios.</p>
+        ${importBanner}
+        ${importDateRangeHtml}
+        <button class="btn btn-primary" style="margin-top:14px" data-action="import-real-history" ${hs.importStatus === "loading" ? "disabled" : ""}>
+          ${icon("refresh", 15, hs.importStatus === "loading" ? "spin" : "")} ${importBtnLabel}
+        </button>
+        <button class="btn btn-ghost" style="margin-top:8px" data-action="add-demo">${icon("sparkles", 15)} Generar datos de prueba (14 días)</button>
+      </div>`;
+  }
+
+  const sorted = [...state.history].sort((a, b) => new Date(a.date) - new Date(b.date));
+
+  const allYears = [...new Set([...sorted.map((h) => new Date(h.date).getFullYear()), ...state.transactions.map((t) => new Date(t.date).getFullYear())])].sort((a, b) => b - a);
+  const currentYear = new Date().getFullYear();
+  const currentMonthKey = todayYMD().slice(0, 7);
+  const pastYears = allYears.filter((y) => y < currentYear);
+
+  const entryInPeriod = (h) => {
+    const f = hs.periodFilter;
+    if (f === "all") return true;
+    if (f === "month") return String(h.date).slice(0, 7) === currentMonthKey;
+    if (f === "year") return new Date(h.date).getFullYear() === currentYear;
+    return String(new Date(h.date).getFullYear()) === f;
+  };
+  const periodFiltered = sorted.filter(entryInPeriod);
+
+  const periodLabel = { all: "Todo", month: "este mes", year: "este año" }[hs.periodFilter] || `de ${hs.periodFilter}`;
+  const periodPillsHtml = `
+    <div class="period-pills">
+      <button class="period-pill ${hs.periodFilter === "all" ? "active" : ""}" data-action="set-period" data-period="all">Todo</button>
+      <button class="period-pill ${hs.periodFilter === "month" ? "active" : ""}" data-action="set-period" data-period="month">Este mes</button>
+      <button class="period-pill ${hs.periodFilter === "year" ? "active" : ""}" data-action="set-period" data-period="year">Este año</button>
+      ${pastYears.map((y) => `<button class="period-pill ${hs.periodFilter === String(y) ? "active" : ""}" data-action="set-period" data-period="${y}">${y}</button>`).join("")}
+    </div>`;
+
+  if (!periodFiltered.length) {
+    const txInPeriod = state.transactions.some((t) => {
+      const f = hs.periodFilter;
+      if (f === "all") return true;
+      if (f === "month") return String(t.date).slice(0, 7) === currentMonthKey;
+      if (f === "year") return new Date(t.date).getFullYear() === currentYear;
+      return String(new Date(t.date).getFullYear()) === f;
+    });
+    return `
+      <div class="stack">
+        ${periodPillsHtml}
+        <div class="card empty-state">
+          <p>No hay registros de seguimiento diario ${periodLabel === "Todo" ? "" : periodLabel}.</p>
+          <p class="muted small">${
+            txInPeriod
+              ? "Sí hay compras/ventas registradas en este período, pero el seguimiento diario (P&L) recién empezó después. Usa \"Importar histórico real\" si quieres rellenar esos días."
+              : "Prueba otro período, o vuelve a \"Todo\" para ver el historial completo."
+          }</p>
+        </div>
+      </div>`;
+  }
+
+  let cum = 0;
+  const chartData = periodFiltered.map((h) => {
+    cum += h.total;
+    return { date: fmtShortDate(h.date), total: h.total, cumulative: cum };
+  });
+
+  const lineSvg = buildChart({ type: "line", data: chartData, valueKey: "cumulative", labelKey: "date", height: 200 });
+  const barSvg = buildChart({ type: "bar", data: chartData, valueKey: "total", labelKey: "date", height: 160 });
+
+  const totalSaldoForReturn = state.portfolio.reduce((s, p) => s + (parseNum(p.saldo) || 0), 0);
+  const baseSaldo = totalSaldoForReturn - cum;
+  const totalReturnPct = baseSaldo > 0 ? (cum / baseSaldo) * 100 : 0;
+  const firstDate = periodFiltered.length ? fmtFullDate(periodFiltered[0].date) : "";
+  const spxLabel = hs.spxStatus === "loading" ? "Comparando…" : "Comparar con S&P 500";
+  const spxResultHtml = hs.spxError
+    ? `<p class="small down" style="margin-top:8px">${escapeHtml(hs.spxError)}</p>`
+    : hs.spxPct !== null
+    ? `<p class="small muted" style="margin-top:8px">S&amp;P 500 en el mismo período: <span class="${hs.spxPct >= 0 ? "up" : "down"}"><b>${fmtPct(hs.spxPct)}</b></span> ${
+        cum >= 0 === hs.spxPct >= 0 ? (totalReturnPct > hs.spxPct ? "— le vas ganando 🎯" : "— el índice te va ganando") : ""
+      }</p>`
+    : "";
+
+  const monthly = {};
+  periodFiltered.forEach((h) => {
+    const key = String(h.date).slice(0, 7); // YYYY-MM
+    monthly[key] = (monthly[key] || 0) + h.total;
+  });
+  const monthNames = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
+  const monthlyRows = Object.entries(monthly)
+    .sort((a, b) => (a[0] < b[0] ? 1 : -1)) // most recent month first
+    .map(([key, total]) => {
+      const [y, m] = key.split("-");
+      const label = `${monthNames[parseInt(m, 10) - 1]} ${y}`;
+      return `<div class="breakdown-row">
+        <div class="breakdown-label" style="text-transform:capitalize">${label}</div>
+        <div class="num small ${total >= 0 ? "up" : "down"}" style="flex:1;text-align:right"><b>${fmtBRL(total)}</b></div>
+      </div>`;
+    })
+    .join("");
+  const monthlyHtml = hs.periodFilter !== "month" && Object.keys(monthly).length > 1 ? `<div class="card"><h2 class="card-title">Resumen mensual</h2>${monthlyRows}</div>` : "";
+
+  const totalReturnHtml = periodFiltered.length
+    ? `<div class="card total-return-card">
+        <span class="muted small">Rendimiento total desde ${firstDate}</span>
+        <span class="total-return-value ${cum >= 0 ? "up" : "down"}">${cum >= 0 ? "+" : ""}${fmtBRL(cum)} (${fmtPct(totalReturnPct)})</span>
+        <button class="btn btn-ghost btn-sm" style="margin-top:10px;align-self:flex-start" data-action="compare-spx" ${hs.spxStatus === "loading" ? "disabled" : ""}>${icon("refresh", 13, hs.spxStatus === "loading" ? "spin" : "")} ${spxLabel}</button>
+        ${spxResultHtml}
+      </div>`
+    : "";
+
+  const editingEntry = hs.editingId ? state.history.find((h) => h.id === hs.editingId) : null;
+  const editCardHtml = editingEntry
+    ? `<div class="card">
+        <h2 class="card-title">Editando ${fmtFullDate(editingEntry.date)}</h2>
+        <div class="table-scroll"><table class="table">
+          <thead><tr><th>Activo</th><th class="num">% día</th></tr></thead>
+          <tbody>
+            ${editingEntry.rows
+              .map(
+                (r) => `<tr>
+              <td><div class="ticker-cell">${avatarHtml(r.ticker, state.posicoes?.logos?.[r.ticker], 20)}<span><b>${escapeHtml(r.ticker)}</b><span class="muted small"> · ${escapeHtml(r.broker)}</span></span></div></td>
+              <td class="num"><input class="input-cell" inputmode="decimal" data-bind="editReview" data-id="${r.id}" value="${escapeAttr(hs.editReviewMap[r.id] ?? "0")}"></td>
+            </tr>`
+              )
+              .join("")}
+            <tr class="row-fx">
+              <td><b>USD/BRL</b><span class="muted small"> · cambio del día</span></td>
+              <td class="num"><input class="input-cell" inputmode="decimal" data-bind="editFx" value="${escapeAttr(hs.editFxInput)}"></td>
+            </tr>
+          </tbody>
+        </table></div>
+        <div class="row-actions">
+          <button class="btn btn-ghost" data-action="cancel-entry-edit">${icon("x", 15)} Cancelar</button>
+          <button class="btn btn-primary" data-action="save-entry-edit">${icon("save", 15)} Guardar cambios</button>
+        </div>
+      </div>`
+    : "";
+
+  const rowsHtml = [...periodFiltered]
+    .reverse()
+    .map(
+      (h) => `
+      <tr>
+        <td class="small">${fmtFullDate(h.date)}</td>
+        <td class="num small ${h.priceTotal >= 0 ? "up" : "down"}">${fmtBRL(h.priceTotal)}</td>
+        <td class="num small ${h.fxGain >= 0 ? "up" : "down"}">${fmtBRL(h.fxGain)}</td>
+        <td class="num ${h.total >= 0 ? "up" : "down"}"><b>${fmtBRL(h.total)}</b></td>
+        <td>
+          <button class="icon-btn" data-action="edit-entry" data-id="${h.id}" title="Editar registro">${icon("pencil", 14)}</button>
+          <button class="icon-btn" data-action="remove-entry" data-id="${h.id}" title="Eliminar registro">${icon("trash", 14)}</button>
+        </td>
+      </tr>`
+    )
+    .join("");
+
+  return `
+    <div class="stack">
+      ${editCardHtml}
+      ${importBanner}
+      ${periodPillsHtml}
+      <div class="card import-range-card">
+        <h2 class="card-title">Importar histórico real</h2>
+        ${importDateRangeHtml}
+        <div class="row-actions">
+          <button class="btn btn-primary btn-sm" data-action="import-real-history" ${hs.importStatus === "loading" ? "disabled" : ""}>
+            ${icon("refresh", 13, hs.importStatus === "loading" ? "spin" : "")} ${importBtnLabel}
+          </button>
+        </div>
+      </div>
+      <div class="toolbar-row">
+        <button class="btn btn-ghost btn-sm" data-action="add-demo">${icon("sparkles", 13)} Generar más datos de prueba</button>
+        <button class="btn btn-ghost btn-sm" data-action="export-csv">${icon("download", 13)} Exportar CSV</button>
+        <button class="btn btn-ghost btn-sm" data-action="clear-history">${icon("trash", 13)} ${hs.confirmClear ? "¿Confirmar borrado?" : "Borrar historial"}</button>
+      </div>
+      ${totalReturnHtml}
+      ${monthlyHtml}
+      <div class="card">
+        <h2 class="card-title">Patrimonio acumulado</h2>
+        <div class="chart-wrap">${lineSvg}</div>
+      </div>
+      <div class="card">
+        <h2 class="card-title">Resultado por día</h2>
+        <div class="chart-wrap">${barSvg}</div>
+      </div>
+      <div class="card">
+        <h2 class="card-title">Registros</h2>
+        <div class="table-scroll"><table class="table">
+          <thead><tr><th>Fecha</th><th class="num">Precios</th><th class="num">Cambio</th><th class="num">Total</th><th></th></tr></thead>
+          <tbody>${rowsHtml}</tbody>
+        </table></div>
+      </div>
+    </div>`;
+}
+
+function addDemo() {
+  const demo = generateDemoEntries(state.portfolio);
+  state.history = [...state.history, ...demo].sort((a, b) => new Date(a.date) - new Date(b.date));
+  persistHistory();
+  render();
+}
+
+async function importRealHistory() {
+  const h = state.historico;
+  const twelveKey = (state.posicoes.apiKey || "").trim();
+  if (!twelveKey) {
+    h.importError = ["Configura tu clave de API de Twelve Data en la pestaña Posiciones primero."];
+    render();
+    return;
+  }
+  const fromDate = h.importFromDate || new Date(Date.now() - 14 * 86400000).toISOString().slice(0, 10);
+  const toDate = h.importToDate || todayYMD();
+  if (new Date(fromDate) > new Date(toDate)) {
+    h.importError = ["La fecha \"desde\" no puede ser posterior a la fecha \"hasta\"."];
+    render();
+    return;
+  }
+  h.fromDate = fromDate;
+  h.toDate = toDate;
+  h.importStatus = "loading";
+  h.importError = null;
+  h.importMessage = null;
+  render();
+
+  // Nota: el histórico de precios de Finnhub (stock/candle) es solo para plan pago,
+  // así que esta función usa Twelve Data para todo (acciones + câmbio), igual que antes.
+  const tickers = [...new Set(state.portfolio.map((p) => p.ticker).filter(Boolean))];
+  const symbols = [...tickers, "USD/BRL"];
+  const errors = [];
+  const tickerCloses = {}; // ticker -> { 'YYYY-MM-DD': closePrice }
+  const fxRates = {}; // 'YYYY-MM-DD' -> rate
+
+  const CHUNK_SIZE = 8;
+  const chunks = [];
+  for (let i = 0; i < symbols.length; i += CHUNK_SIZE) chunks.push(symbols.slice(i, i + CHUNK_SIZE));
+
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i];
+    if (i > 0) {
+      h.importProgressLabel = `Esperando ~1 min (límite del plan gratis)… grupo ${i + 1}/${chunks.length}`;
+      render();
+      await new Promise((r) => setTimeout(r, 61000));
+    }
+
+    let attempts = 0;
+    let done = false;
+    while (!done) {
+      attempts++;
+      h.importProgressLabel = chunks.length > 1 ? `Buscando histórico — grupo ${i + 1}/${chunks.length}…` : "Buscando histórico…";
+      render();
+      try {
+        const url = `https://api.twelvedata.com/time_series?symbol=${chunk.join(",")}&interval=1day&start_date=${h.fromDate}&end_date=${h.toDate}&apikey=${encodeURIComponent(twelveKey)}`;
+        const resp = await fetch(url);
+        const data = await resp.json();
+        if (data && data.status === "error") {
+          if (data.code === 429 && attempts < 2) {
+            // hit the per-minute limit (likely shared with another recent fetch) — wait and retry this same group once.
+            h.importProgressLabel = `Límite del minuto alcanzado, reintentando grupo ${i + 1}/${chunks.length} en ~1 min…`;
+            render();
+            await new Promise((r) => setTimeout(r, 61000));
+            continue;
+          }
+          errors.push(data.message || "Error al buscar histórico en Twelve Data.");
+          done = true;
+          continue;
+        }
+        const shaped = chunk.length === 1 ? { [chunk[0]]: data } : data;
+        Object.entries(shaped || {}).forEach(([sym, val]) => {
+          if (!val || !Array.isArray(val.values)) { errors.push(`Sin histórico para ${sym}.`); return; }
+          const map = {};
+          val.values.forEach((v) => {
+            const d = String(v.datetime).slice(0, 10);
+            const close = parseFloat(v.close);
+            if (Number.isFinite(close) && !isNonTradingDay(d)) map[d] = close;
+          });
+          if (sym === "USD/BRL") Object.assign(fxRates, map);
+          else tickerCloses[sym] = map;
+        });
+        done = true;
+      } catch (err) {
+        errors.push("No pude buscar histórico en Twelve Data (sin conexión).");
+        done = true;
+      }
+    }
+  }
+  h.importProgressLabel = null;
+
+  // Day-over-day % change, computed within each series' own trading calendar.
+  const tickerChangePct = {};
+  const tickerPrevDate = {};
+  Object.entries(tickerCloses).forEach(([sym, closesByDate]) => {
+    const dates = Object.keys(closesByDate).sort();
+    const pctByDate = {};
+    const prevByDate = {};
+    for (let i = 1; i < dates.length; i++) {
+      const prev = closesByDate[dates[i - 1]];
+      const curr = closesByDate[dates[i]];
+      if (prev) {
+        pctByDate[dates[i]] = ((curr - prev) / prev) * 100;
+        prevByDate[dates[i]] = dates[i - 1];
+      }
+    }
+    tickerChangePct[sym] = pctByDate;
+    tickerPrevDate[sym] = prevByDate;
+  });
+
+  const fxDates = Object.keys(fxRates).sort();
+  const fxChangePct = {};
+  for (let i = 1; i < fxDates.length; i++) {
+    const prev = fxRates[fxDates[i - 1]];
+    const curr = fxRates[fxDates[i]];
+    if (prev) fxChangePct[fxDates[i]] = ((curr - prev) / prev) * 100;
+  }
+
+  const allDates = new Set();
+  Object.values(tickerChangePct).forEach((m) => Object.keys(m).forEach((d) => allDates.add(d)));
+  Object.keys(fxChangePct).forEach((d) => allDates.add(d));
+
+  const existingDates = new Set(state.history.map((e) => String(e.date).slice(0, 10)));
+  const totalSaldo = state.portfolio.reduce((s, p) => s + parseNum(p.saldo), 0);
+
+// Reconstruct how many shares of a ticker were held on a given date, from saved
+  // buy/sell transactions. Falls back to the CURRENT quantity (assuming the position was
+  // held unchanged) only when there's no transaction history at all for that ticker.
+ const txByTicker = {};
+  state.transactions.forEach((t) => {
+    (txByTicker[t.ticker] = txByTicker[t.ticker] || []).push(t);
+  });
+  const historicalQty = (ticker, dateStr) => {
+    const txs = txByTicker[ticker];
+    if (!txs || !txs.length) return null;
+    const cutoff = new Date(`${dateStr}T23:59:59`).getTime();
+    let qty = 0;
+    let any = false;
+    txs.forEach((t) => {
+      if (new Date(t.date).getTime() > cutoff) return;
+      any = true;
+      qty += t.type === "buy" ? t.qty : -t.qty;
+    });
+    return any ? splitAdjustQty(ticker, qty, dateStr) : 0;
+  };
+  const qtyForRowAtDate = (p, dateStr) => {
+    const recon = historicalQty(p.ticker, dateStr);
+    return recon !== null ? recon * rowShareOfTicker(p) : parseNum(p.quantity);
+  };
+
+  // When the same ticker is split across more than one row/broker, divide the reconstructed
+  // historical quantity between them using each row's share of today's quantity for that
+  // ticker — otherwise every row sharing a ticker would each get the FULL historical amount.
+  const tickerTotalQtyToday = {};
+  state.portfolio.forEach((p) => {
+    tickerTotalQtyToday[p.ticker] = (tickerTotalQtyToday[p.ticker] || 0) + parseNum(p.quantity);
+  });
+  function rowShareOfTicker(p) {
+    const total = tickerTotalQtyToday[p.ticker];
+    if (!total) return 1;
+    return parseNum(p.quantity) / total;
+  }
+
+  const newEntries = [...allDates]
+    .filter((d) => !existingDates.has(d) && !isNonTradingDay(d))
+    .sort()
+    .map((d) => {
+      const fxToday = fxRates[d];
+      let totalSaldoStartOfDay = 0;
+      const rows = state.portfolio.map((p) => {
+        const prevDate = tickerPrevDate[p.ticker]?.[d];
+        const priceAtPrev = prevDate ? tickerCloses[p.ticker]?.[prevDate] : null;
+        const fxAtPrev = prevDate ? nearestOnOrBefore(fxRates, prevDate) : null;
+        const qtyStart = Math.max(0, qtyForRowAtDate(p, prevDate || d));
+        const pct = tickerChangePct[p.ticker]?.[d] ?? 0;
+        // Si falta precio o cambio histórico para ese día, no hay forma confiable de
+        // reconstruir el saldo: se omite esa posición ese día (saldo 0) en vez de usar
+        // el saldo ACTUAL (mucho mayor), que distorsionaría todo el cálculo acumulado.
+        const saldo = priceAtPrev != null && fxAtPrev != null ? qtyStart * priceAtPrev * fxAtPrev : 0;
+        totalSaldoStartOfDay += saldo;
+        return { id: p.id, ticker: p.ticker, broker: p.broker, saldo, changePct: pct, gain: (saldo * pct) / 100 };
+      });
+      const priceTotal = rows.reduce((s, r) => s + r.gain, 0);
+      const fxPct = fxChangePct[d] ?? 0;
+      const fxGain = (totalSaldoStartOfDay * fxPct) / 100;
+      return { id: `real-${d}`, date: `${d}T12:00:00`, rows, fxPct, fxGain, priceTotal, total: priceTotal + fxGain };
+    });
+
+  state.history = [...state.history, ...newEntries].sort((a, b) => new Date(a.date) - new Date(b.date));
+  persistHistory();
+
+  h.importStatus = "idle";
+  h.importError = errors.length ? errors : null;
+  h.importMessage = newEntries.length
+    ? `${newEntries.length} día(s) importado(s) con datos reales.`
+    : errors.length
+    ? null
+    : "No hay días nuevos para importar (esos días ya estaban en el historial).";
+  render();
+}
+
+function clearHistoryAction() {
+  if (!state.historico.confirmClear) {
+    state.historico.confirmClear = true;
+    render();
+    return;
+  }
+  state.history = [];
+  persistHistory();
+  state.historico.confirmClear = false;
+  render();
+}
+
+function removeEntryAction(id) {
+  state.history = state.history.filter((h) => h.id !== id);
+  persistHistory();
+  render();
+}
+
+function downloadBlob(content, filename, mime) {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function exportBackup() {
+  const cache = loadQuotesCache();
+  const backup = {
+    type: "pnl-tracker-backup",
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    portfolio: state.portfolio,
+    history: state.history,
+    transactions: state.transactions,
+    apiKey: cache.apiKey,
+    finnhubKey: cache.finnhubKey,
+    quotes: cache.quotes,
+    logos: cache.logos,
+    fxRateInput: cache.fxRateInput,
+  };
+  downloadBlob(JSON.stringify(backup, null, 2), `pnl-backup-${todayYMD()}.json`, "application/json");
+}
+async function fetchFxHistoryRange(fromDate, toDate) {
+  const twelveKey = (state.posicoes.apiKey || "").trim();
+  if (!twelveKey) return {};
+  try {
+    const url = `https://api.twelvedata.com/time_series?symbol=USD/BRL&interval=1day&start_date=${fromDate}&end_date=${toDate}&apikey=${encodeURIComponent(twelveKey)}`;
+    const resp = await fetch(url);
+    const data = await resp.json();
+    if (!Array.isArray(data?.values)) return {};
+    const map = {};
+    data.values.forEach((v) => {
+      const d = String(v.datetime).slice(0, 10);
+      const close = parseFloat(v.close);
+      if (Number.isFinite(close)) map[d] = close;
+    });
+    return map;
+  } catch (_) {
+    return {};
+  }
+}
+
+function fxRateNear(fxMap, dateStr) {
+  const dates = Object.keys(fxMap).sort();
+  if (!dates.length) return null;
+  let chosen = null;
+  for (const d of dates) {
+    if (d <= dateStr) chosen = d;
+    else break;
+  }
+  return fxMap[chosen ?? dates[0]];
+}
+
+function nearestOnOrBefore(map, dateStr) {
+  const dates = Object.keys(map).sort();
+  let chosen = null;
+  for (const d of dates) {
+    if (d <= dateStr) chosen = d;
+    else break;
+  }
+  return chosen !== null ? map[chosen] : null;
+}
+
+function parseCsvLine(line) {
+  const out = [];
+  let cur = "";
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (inQuotes) {
+      if (c === '"' && line[i + 1] === '"') { cur += '"'; i++; }
+      else if (c === '"') inQuotes = false;
+      else cur += c;
+    } else if (c === '"') inQuotes = true;
+    else if (c === ",") { out.push(cur); cur = ""; }
+    else cur += c;
+  }
+  out.push(cur);
+  return out;
+}
+
+let tickerSearchTimer = null;
+
+function searchTickerDebounced(query) {
+  clearTimeout(tickerSearchTimer);
+  const f = state.posicoes.txForm;
+  if (!query || query.trim().length < 2) {
+    f.tickerSearchResults = [];
+    const box = document.getElementById("ticker-search-results");
+    if (box) box.innerHTML = "";
+    return;
+  }
+  tickerSearchTimer = setTimeout(() => runTickerSearch(query.trim()), 350);
+}
+
+async function runTickerSearch(query) {
+  const f = state.posicoes.txForm;
+  const finnhubKey = (state.posicoes.finnhubKey || "").trim();
+  if (!finnhubKey) {
+    f.tickerSearchResults = [];
+    f.error = "Configura tu clave de Finnhub para poder buscar por nombre de empresa.";
+    render();
+    return;
+  }
+  f.tickerSearchStatus = "loading";
+  try {
+    const url = `https://finnhub.io/api/v1/search?q=${encodeURIComponent(query)}&token=${encodeURIComponent(finnhubKey)}`;
+    const resp = await fetch(url);
+    const data = await resp.json();
+    f.tickerSearchResults = Array.isArray(data?.result) ? data.result.slice(0, 6) : [];
+  } catch (err) {
+    f.tickerSearchResults = [];
+  }
+  f.tickerSearchStatus = "idle";
+  renderTickerSearchResults();
+}
+
+function renderTickerSearchResults() {
+  const box = document.getElementById("ticker-search-results");
+  if (!box) return;
+  const f = state.posicoes.txForm;
+  box.innerHTML = f.tickerSearchResults
+    .map(
+      (r) =>
+        `<button class="ticker-search-item" data-action="select-ticker-result" data-symbol="${escapeAttr(r.symbol)}">
+          <b>${escapeHtml(r.symbol)}</b><span class="muted small">${escapeHtml(r.description || "")}</span>
+        </button>`
+    )
+    .join("");
+}
+
+function selectTickerResult(symbol) {
+  const f = state.posicoes.txForm;
+  f.newTicker = symbol;
+  f.tickerSearchResults = [];
+  render();
+}
+
+function addTransaction() {
+  const p = state.posicoes;
+  const f = p.txForm;
+  const qty = parseNum(f.qty);
+  const price = parseNum(f.price);
+  f.error = null;
+
+  if (!qty || qty <= 0) { f.error = "Ingresa una cantidad válida (mayor a 0)."; render(); return; }
+  if (f.type === "buy" && (!price || price <= 0)) { f.error = "Ingresa un precio válido (mayor a 0)."; render(); return; }
+
+  if (f.rowId === "__new__") {
+    const ticker = f.newTicker.trim().toUpperCase();
+    if (!ticker) { f.error = "Ingresa el ticker de la nueva posición."; render(); return; }
+    if (f.type === "sell") { f.error = "No se puede vender algo que todavía no está en tu carteira. Agrégalo como compra primero."; render(); return; }
+    const newRow = { id: uid(), ticker, broker: f.newBroker.trim(), quantity: qty, avgCost: price, price: "", saldo: 0 };
+    p.rows = [...p.rows, newRow];
+    p.dirty = true;
+    f.rowId = newRow.id;
+    state.transactions.push({ id: uid(), source: "manual", ticker, date: new Date(`${f.date}T12:00:00`).toISOString(), type: f.type, qty, price });
+  } else {
+    const row = p.rows.find((r) => r.id === f.rowId);
+    if (!row) { f.error = "No encontré esa posición."; render(); return; }
+    const oldQty = parseNum(row.quantity);
+    const oldAvgCost = typeof row.avgCost === "number" ? row.avgCost : null;
+    if (f.type === "buy") {
+      const newQty = oldQty + qty;
+      row.avgCost = oldAvgCost ? (oldQty * oldAvgCost + qty * price) / newQty : price;
+      row.quantity = newQty;
+    } else {
+      if (qty > oldQty + 0.0001) { f.error = `Esa posición solo tiene ${oldQty} unidades — no se puede vender ${qty}.`; render(); return; }
+      const newQty = Math.max(oldQty - qty, 0);
+      row.quantity = newQty;
+      if (newQty <= 0.0001) { row.avgCost = null; row.quantity = 0; }
+      // avgCost of remaining shares stays the same (average-cost method)
+    }
+    p.dirty = true;
+    state.transactions.push({ id: uid(), source: "manual", ticker: row.ticker, date: new Date(`${f.date}T12:00:00`).toISOString(), type: f.type, qty, price: price || row.avgCost || 0 });
+  }
+  persistTransactions();
+
+  f.qty = "";
+  f.price = "";
+  f.newTicker = "";
+  f.newBroker = "";
+  f.tickerSearchResults = [];
+  render();
+}
+
+function importPurchasesFile(file) {
+  const p = state.posicoes;
+  const reader = new FileReader();
+  reader.onload = async () => {
+    try {
+      const lines = String(reader.result).split(/\r?\n/).filter((l) => l.trim());
+      if (!lines.length) throw new Error("vacío");
+      const header = parseCsvLine(lines[0]).map((h) => h.trim().toLowerCase());
+      const idx = {
+        symbol: header.indexOf("symbol"),
+        date: header.indexOf("date"),
+        type: header.indexOf("type"),
+        qty: header.indexOf("qty"),
+        price: header.indexOf("price"),
+        fx: header.indexOf("fx"),
+      };
+      if (idx.symbol === -1 || idx.type === -1 || idx.qty === -1 || idx.price === -1) {
+        throw new Error("Faltan columnas (symbol, type, qty, price)");
+      }
+
+      const txs = lines.slice(1).map((l) => parseCsvLine(l)).filter((c) => c.length >= 4);
+      // sort chronologically so sells reduce the running average cost correctly, oldest first.
+      txs.sort((a, b) => new Date(a[idx.date]) - new Date(b[idx.date]));
+
+   const parseQty = (raw) => parseNum(raw);
+
+      // Keep a persisted record of every transaction (deduped), so the app remembers how far
+      // back your investing history goes — used e.g. to build the year filters in Historial.
+      const txKey = (t) => `${t.ticker}|${t.date}|${t.type}|${t.qty.toFixed(4)}|${t.price.toFixed(4)}`;
+      const existingKeys = new Set(state.transactions.map(txKey));
+      txs.forEach((cols) => {
+        const rawSym = (cols[idx.symbol] || "").trim();
+        const sym = rawSym.includes(":") ? rawSym.split(":").pop() : rawSym;
+        if (!sym) return;
+        const type = (cols[idx.type] || "").trim().toLowerCase();
+        if (type !== "buy" && type !== "sell") return;
+        const dateRaw = cols[idx.date] || "";
+        const date = dateRaw ? new Date(dateRaw).toISOString() : new Date().toISOString();
+        const rec = { ticker: sym, date, type, qty: parseQty(cols[idx.qty]), price: parseNum(cols[idx.price]) };
+        const key = txKey(rec);
+        if (!existingKeys.has(key)) {
+          existingKeys.add(key);
+          state.transactions.push({ id: uid(), source: "csv", ...rec });
+        }
+      });
+      persistTransactions();
+
+      const qty = {};
+      const cost = {};
+      const costBrl = {};
+      txs.forEach((cols) => {
+        const rawSym = (cols[idx.symbol] || "").trim();
+        const sym = rawSym.includes(":") ? rawSym.split(":").pop() : rawSym;
+        if (!sym) return;
+        const type = (cols[idx.type] || "").trim().toLowerCase();
+        const dateRaw = cols[idx.date] || "";
+        const dateStr = dateRaw ? new Date(dateRaw).toISOString().slice(0, 10) : todayYMD();
+        const q = splitAdjustQty(sym, parseQty(cols[idx.qty]), dateStr);
+        const pr = parseNum(cols[idx.price]) / (q ? q / parseQty(cols[idx.qty]) || 1 : 1);
+        const fxAtTx = idx.fx !== -1 ? parseNum(cols[idx.fx]) : 0;
+        qty[sym] = qty[sym] || 0;
+        cost[sym] = cost[sym] || 0;
+        costBrl[sym] = costBrl[sym] || 0;
+        if (type === "buy") {
+          qty[sym] += q;
+          cost[sym] += q * pr;
+          if (fxAtTx) costBrl[sym] += q * pr * fxAtTx;
+        } else if (type === "sell") {
+          if (qty[sym] > 0) {
+            const avg = cost[sym] / qty[sym];
+            const avgBrl = costBrl[sym] / qty[sym];
+            cost[sym] -= avg * q;
+            costBrl[sym] -= avgBrl * q;
+          }
+          qty[sym] -= q;
+        }
+      });
+
+      const avgCostByTicker = {};
+      const avgCostBrlByTicker = {};
+      Object.keys(qty).forEach((sym) => {
+        if (qty[sym] > 0.0001) {
+          avgCostByTicker[sym] = cost[sym] / qty[sym];
+          avgCostBrlByTicker[sym] = costBrl[sym] / qty[sym];
+        }
+      });
+
+      let matched = 0;
+      state.portfolio = state.portfolio.map((row) => {
+        const avg = avgCostByTicker[row.ticker];
+        const avgBrl = avgCostBrlByTicker[row.ticker];
+        if (typeof avg === "number" && Number.isFinite(avg)) {
+          matched++;
+          return { ...row, avgCost: avg, avgCostBrl: Number.isFinite(avgBrl) ? avgBrl : null };
+        }
+        return row;
+      });
+      persistPortfolio();
+      resetPosicoesState();
+      state.posicoes.quotesError = matched
+        ? null
+        : ["No encontré ningún ticker de ese archivo que coincida con tu carteira."];
+      state.posicoes.importPurchasesMessage = matched ? `Precio de compra actualizado para ${matched} activo(s).` : null;
+      render();
+    } catch (err) {
+      p.quotesError = ["No pude leer ese CSV. Revisa que tenga las columnas symbol, date, type, qty, price (formato de TradingView)."];
+      render();
+    }
+  };
+  reader.readAsText(file);
+}
+
+function importBackupFile(file) {
+  const p = state.posicoes;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const data = JSON.parse(reader.result);
+      if (!data || data.type !== "pnl-tracker-backup" || !Array.isArray(data.portfolio)) {
+        p.quotesError = ["Ese archivo no parece ser una copia de seguridad válida de esta app."];
+        render();
+        return;
+      }
+      state.portfolio = data.portfolio;
+      state.history = Array.isArray(data.history) ? data.history : [];
+      state.transactions = Array.isArray(data.transactions) ? data.transactions : [];
+      persistTransactions();
+      try {
+        localStorage.setItem("pnl-twelvedata-key", data.apiKey || "");
+        localStorage.setItem("pnl-finnhub-key", data.finnhubKey || "");
+        localStorage.setItem("pnl-quotes", JSON.stringify(data.quotes || {}));
+        localStorage.setItem("pnl-logos", JSON.stringify(data.logos || {}));
+        localStorage.setItem("pnl-fx", JSON.stringify(typeof data.fxRateInput === "string" ? parseNum(data.fxRateInput) : data.fxRateInput || null));
+      } catch (_) {}
+      persistPortfolio();
+      persistHistory();
+      resetPosicoesState();
+      state.posicoes.quotesError = null;
+      state.posicoes.dirty = false;
+      render();
+    } catch (err) {
+      p.quotesError = ["No pude leer ese archivo (¿es un JSON válido exportado desde esta app?)."];
+      render();
+    }
+  };
+  reader.readAsText(file);
+}
+
+function csvEscape(v) {
+  const s = String(v ?? "");
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+function exportCsv() {
+  const tickers = [...new Set(state.portfolio.map((p) => p.ticker).filter(Boolean))];
+  const header = ["fecha", "precios_brl", "cambio_brl", "total_brl", ...tickers.map((t) => `${t}_%`)];
+  const lines = [header.map(csvEscape).join(",")];
+  [...state.history]
+    .sort((a, b) => new Date(a.date) - new Date(b.date))
+    .forEach((h) => {
+      const pctByTicker = {};
+      h.rows.forEach((r) => { pctByTicker[r.ticker] = r.changePct; });
+      const row = [
+        fmtFullDate(h.date),
+        h.priceTotal.toFixed(2),
+        h.fxGain.toFixed(2),
+        h.total.toFixed(2),
+        ...tickers.map((t) => (typeof pctByTicker[t] === "number" ? pctByTicker[t].toFixed(4) : "")),
+      ];
+      lines.push(row.map(csvEscape).join(","));
+    });
+  downloadBlob(lines.join("\n"), `pnl-historial-${todayYMD()}.csv`, "text/csv;charset=utf-8");
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Top-level render & event wiring                                       */
+/* ---------------------------------------------------------------------- */
+
+function switchTab(tab) {
+  state.tab = tab;
+  if (tab === "hoje") resetHojeState();
+  else if (tab === "posicoes") resetPosicoesState();
+  else if (tab === "historico") resetHistoricoState();
+  render();
+}
+
+function render() {
+  const root = document.getElementById("app");
+  const rowsForTotal = state.tab === "posicoes" && state.posicoes ? state.posicoes.rows : state.portfolio;
+  const totalSaldo =
+    state.tab === "posicoes" && state.posicoes
+      ? state.posicoes.rows.reduce((s, r) => s + rowEffectiveValue(r), 0)
+      : state.portfolio.reduce((s, p) => s + (parseNum(p.saldo) || 0), 0);
+  const totalUsd = rowsForTotal.reduce((s, r) => s + rowEffectiveValueUsd(r), 0);
+  const isUsd = state.displayCurrency === "USD";
+  const displayedTotal = isUsd ? (totalUsd ? fmtUSD(totalUsd) : "— US$") : fmtBRL(totalSaldo);
+  const lastEntry = state.history.length ? state.history[state.history.length - 1] : null;
+  const isTodayEntry = lastEntry && new Date(lastEntry.date).toDateString() === new Date().toDateString();
+  const dayChangeHtml = isTodayEntry
+    ? `<span class="header-total-change ${lastEntry.total >= 0 ? "up" : "down"}">${lastEntry.total >= 0 ? "+" : ""}${fmtBRL(lastEntry.total)} (${fmtPct(totalSaldo ? (lastEntry.total / totalSaldo) * 100 : 0)})</span>`
+    : "";
+
+  root.innerHTML = `
+    <div class="app">
+      <header class="header">
+        <div class="header-top">
+          <div>
+            <div class="brand-eyebrow">CARTERA INTERNACIONAL</div>
+            <h1 class="brand-title">P&amp;L Diario</h1>
+          </div>
+          <div class="header-right">
+            <button class="theme-toggle" data-action="toggle-theme" title="Cambiar tema">${icon("sun", 15, "theme-icon-light")}${icon("moon", 15, "theme-icon-dark")}</button>
+            <button class="install-pill" id="install-btn" data-action="install-app" hidden>${icon("download", 13)} Instalar app</button>
+            <div class="header-total">
+              <div class="header-total-toprow">
+                <span class="header-total-label">Saldo total</span>
+                <button class="currency-toggle" data-action="toggle-currency">${isUsd ? "US$" : "R$"} ⇄</button>
+              </div>
+              <span class="header-total-value" id="header-total-value">${displayedTotal}</span>
+              ${dayChangeHtml}
+            </div>
+          </div>
+        </div>
+        ${renderTickerTape(state.portfolio, lastEntry)}
+      </header>
+
+      <nav class="tabbar">
+        <button class="tab ${state.tab === "hoje" ? "tab-active" : ""}" data-action="switch-tab" data-tab="hoje">${icon("wallet", 15)} Hoy</button>
+        <button class="tab ${state.tab === "posicoes" ? "tab-active" : ""}" data-action="switch-tab" data-tab="posicoes">${icon("list-checks", 15)} Posiciones</button>
+        <button class="tab ${state.tab === "historico" ? "tab-active" : ""}" data-action="switch-tab" data-tab="historico">${icon("history", 15)} Historial</button>
+      </nav>
+
+      <main class="main">
+        ${state.tab === "hoje" ? renderHoje() : state.tab === "posicoes" ? renderPosicoes() : renderHistorico()}
+      </main>
+    </div>`;
+
+  if (deferredInstallPrompt) {
+    const btn = document.getElementById("install-btn");
+    if (btn) btn.hidden = false;
+  }
+}
+
+function handleAction(action, el) {
+  const id = el.dataset.id;
+  switch (action) {
+    case "switch-tab": switchTab(el.dataset.tab); break;
+    case "start-manual": startManual(); break;
+    case "fetch-live-day-change": fetchLiveDayChange(); break;
+    case "parse-pasted": parsePasted(); break;
+    case "edit-review": state.hoje.status = "review"; render(); break;
+    case "cancel-review": resetHojeState(); render(); break;
+    case "compute": compute(); break;
+    case "discard-result": resetHojeState(); render(); break;
+    case "save-history": saveHistoryAction(); break;
+    case "new-entry": resetHojeState(); render(); break;
+    case "add-row": addRow(); break;
+    case "remove-row": removeRow(id); break;
+    case "move-row-up": moveRow(id, -1); break;
+    case "move-row-down": moveRow(id, 1); break;
+    case "save-positions": savePositions(); break;
+    case "export-backup": exportBackup(); break;
+    case "trigger-import-backup": document.getElementById("import-backup-input")?.click(); break;
+    case "trigger-import-purchases": document.getElementById("import-purchases-input")?.click(); break;
+    case "add-transaction": addTransaction(); break;
+    case "select-ticker-result": selectTickerResult(el.dataset.symbol); break;
+    case "fetch-quotes": fetchQuotes(); break;
+    case "add-demo": addDemo(); break;
+    case "import-real-history": importRealHistory(); break;
+    case "export-csv": exportCsv(); break;
+    case "edit-entry": startEditEntry(id); break;
+    case "compare-spx": compareSpx(); break;
+    case "set-period": state.historico.periodFilter = el.dataset.period; render(); break;
+    case "cancel-entry-edit": cancelEditEntry(); break;
+    case "save-entry-edit": saveEntryEdit(); break;
+    case "clear-history": clearHistoryAction(); break;
+    case "remove-entry": removeEntryAction(id); break;
+    case "install-app": installApp(); break;
+    case "toggle-currency":
+      state.displayCurrency = state.displayCurrency === "USD" ? "BRL" : "USD";
+      try { localStorage.setItem("pnl-currency", state.displayCurrency); } catch (_) {}
+      render();
+      break;
+    case "toggle-theme": {
+      const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+      document.documentElement.dataset.theme = next;
+      try { localStorage.setItem("pnl-theme", next); } catch (_) {}
+      break;
+    }
+  }
+}
+
+const root = document.getElementById("app");
+
+root.addEventListener("click", (e) => {
+  const el = e.target.closest("[data-action]");
+  if (!el || el.disabled) return;
+  handleAction(el.dataset.action, el);
+});
+
+root.addEventListener("input", (e) => {
+  const el = e.target.closest("[data-bind]");
+  if (!el) return;
+  const bind = el.dataset.bind;
+  const id = el.dataset.id;
+
+  if (bind === "review") {
+    state.hoje.reviewMap[id] = el.value;
+  } else if (bind === "fx") {
+    state.hoje.fxPctInput = el.value;
+  } else if (bind === "editReview") {
+    state.historico.editReviewMap[id] = el.value;
+  } else if (bind === "editFx") {
+    state.historico.editFxInput = el.value;
+  } else if (bind === "importFromDate") {
+    state.historico.importFromDate = el.value;
+  } else if (bind === "importToDate") {
+    state.historico.importToDate = el.value;
+  } else if (bind === "paste") {
+    state.hoje.pasteText = el.value;
+    const btn = document.querySelector('[data-action="parse-pasted"]');
+    if (btn) btn.disabled = !el.value.trim();
+    if (state.hoje.error) {
+      // clear stale error banner without a full re-render (keeps focus in the textarea)
+      state.hoje.error = null;
+      const banner = root.querySelector(".banner-warn");
+      if (banner) banner.remove();
+    }
+  } else if (bind === "apiKey") {
+    state.posicoes.apiKey = el.value;
+    persistQuotesCache();
+  } else if (bind === "finnhubKey") {
+    state.posicoes.finnhubKey = el.value;
+    persistQuotesCache();
+  } else if (bind === "fxRate") {
+    state.posicoes.fxRateInput = el.value;
+    persistQuotesCache();
+    state.posicoes.rows.forEach((r) => updateRowValueCell(r.id));
+    updateLiveTotal();
+  } else if (bind === "txNewTicker") {
+    state.posicoes.txForm.newTicker = el.value;
+    searchTickerDebounced(el.value);
+  } else if (bind === "txNewBroker") {
+    state.posicoes.txForm.newBroker = el.value;
+  } else if (bind === "txQty") {
+    state.posicoes.txForm.qty = el.value;
+  } else if (bind === "txPrice") {
+    state.posicoes.txForm.price = el.value;
+  } else if (bind === "txDate") {
+    state.posicoes.txForm.date = el.value;
+  } else if (["ticker", "broker", "quantity", "price", "saldo"].includes(bind)) {
+    const row = state.posicoes.rows.find((r) => r.id === id);
+    if (row) {
+      row[bind] = el.value;
+      state.posicoes.dirty = true;
+      const saveBtn = document.querySelector('[data-action="save-positions"]');
+      if (saveBtn) saveBtn.disabled = false;
+      if (bind === "quantity" || bind === "price") {
+        updateRowValueCell(id);
+        updateLiveTotal();
+      } else if (bind === "saldo") {
+        updateLiveTotal();
+      }
+    }
+  }
+});
+
+root.addEventListener("change", (e) => {
+  const el = e.target.closest('[data-bind="updateSaldo"]');
+  if (el) state.hoje.updateSaldo = el.checked;
+
+  const quickSaveEl = e.target.closest('[data-bind="quickSave"]');
+  if (quickSaveEl) {
+    state.hoje.quickSave = quickSaveEl.checked;
+    try { localStorage.setItem("pnl-quick-save", quickSaveEl.checked ? "1" : "0"); } catch (_) {}
+  }
+
+  if (e.target.id === "import-backup-input" && e.target.files?.[0]) {
+    importBackupFile(e.target.files[0]);
+    e.target.value = "";
+  }
+  if (e.target.id === "import-purchases-input" && e.target.files?.[0]) {
+    importPurchasesFile(e.target.files[0]);
+    e.target.value = "";
+  }
+
+  const txRowSel = e.target.closest('[data-bind="txRowId"]');
+  if (txRowSel) { state.posicoes.txForm.rowId = txRowSel.value; render(); }
+  const txTypeSel = e.target.closest('[data-bind="txType"]');
+  if (txTypeSel) state.posicoes.txForm.type = txTypeSel.value;
+});
+
+/* ---------------------------------------------------------------------- */
+/*  PWA: install prompt & service worker                                  */
+/* ---------------------------------------------------------------------- */
+
+let deferredInstallPrompt = null;
+
+window.addEventListener("beforeinstallprompt", (e) => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  const btn = document.getElementById("install-btn");
+  if (btn) btn.hidden = false;
+});
+
+function installApp() {
+  if (!deferredInstallPrompt) return;
+  deferredInstallPrompt.prompt();
+  deferredInstallPrompt.userChoice.finally(() => {
+    deferredInstallPrompt = null;
+    const btn = document.getElementById("install-btn");
+    if (btn) btn.hidden = true;
+  });
+}
+
+window.addEventListener("appinstalled", () => {
+  deferredInstallPrompt = null;
+});
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("./service-worker.js").catch(() => {});
+  });
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Init                                                                   */
+/* ---------------------------------------------------------------------- */
+
+loadState();
+resetHojeState();
+resetPosicoesState();
+resetHistoricoState();
+render();
+</script>
+</body>
+</html>
