@@ -586,6 +586,67 @@ function removeStockSplit(id) {
   persistSplits();
 }
 
+// Ajusta una cantidad/precio CRUDO (tal como viene en un CSV recién importado) aplicando todos
+// los desdoblamientos YA REGISTRADOS para ese ticker que correspondan a esa fecha. Así, al
+// reimportar un CSV después de haber aplicado un split, la fila recién leída queda en la MISMA
+// escala que la transacción ya guardada (y el control de duplicados la reconoce correctamente
+// en vez de agregarla de nuevo sin ajustar, mezclando datos de dos escalas distintas).
+function applySplitsToRawValue(ticker, dateIso, qty, price) {
+  let q = qty;
+  let pr = price;
+  state.splits.forEach((s) => {
+    if (s.ticker !== ticker) return;
+    const cutoff = new Date(`${s.date}T00:00:00`).getTime();
+    if (new Date(dateIso).getTime() < cutoff) {
+      q *= s.ratio;
+      pr /= s.ratio;
+    }
+  });
+  return { qty: q, price: pr };
+}
+
+// Limpia transacciones duplicadas que hayan quedado de reimportar un CSV ANTES de que existiera
+// el ajuste anterior: misma fecha, mismo tipo, mismo ticker, pero una en escala "cruda" (sin
+// ajustar por el split) y otra ya ajustada. Se detecta por la relación exacta del split
+// (qty_ajustada = qty_cruda × proporción, precio_ajustado = precio_crudo ÷ proporción) y se
+// elimina la versión cruda, dejando solo la correcta.
+function dedupeSplitDuplicateTransactions() {
+  let removed = 0;
+  const toRemove = new Set();
+  state.splits.forEach((s) => {
+    const cutoff = new Date(`${s.date}T00:00:00`).getTime();
+    const candidates = state.transactions.filter((t) => t.ticker === s.ticker && new Date(t.date).getTime() < cutoff);
+    const byDateType = {};
+    candidates.forEach((t) => {
+      const key = `${String(t.date).slice(0, 10)}|${t.type}`;
+      (byDateType[key] = byDateType[key] || []).push(t);
+    });
+    Object.values(byDateType).forEach((group) => {
+      if (group.length < 2) return;
+      for (let i = 0; i < group.length; i++) {
+        for (let j = 0; j < group.length; j++) {
+          if (i === j) continue;
+          const raw = group[i];
+          const adjusted = group[j];
+          if (toRemove.has(raw.id) || toRemove.has(adjusted.id)) continue;
+          if (!raw.qty || !adjusted.price) continue;
+          const ratioQty = adjusted.qty / raw.qty;
+          const ratioPrice = raw.price / adjusted.price;
+          if (Math.abs(ratioQty - s.ratio) < 0.0005 && Math.abs(ratioPrice - s.ratio) < 0.0005) {
+            toRemove.add(raw.id); // "raw" es la versión sin ajustar de la misma operación: se elimina
+          }
+        }
+      }
+    });
+  });
+  if (toRemove.size) {
+    state.transactions = state.transactions.filter((t) => !toRemove.has(t.id));
+    removed = toRemove.size;
+    persistTransactions();
+  }
+  return removed;
+}
+
 function resetHojeState() {
   // Si hoy (según la hora de Brasil) ya tiene un registro en el historial — guardado
   // automáticamente después de las 20:00 — se muestra esa información directamente en vez de
@@ -1705,6 +1766,7 @@ function renderPosicoes() {
         </div>
         <p class="upload-hint">Proporción = acciones nuevas por cada acción antigua. Un desdoblamiento 3-por-1 (como el de ARKB) es "3". Un desdoblamiento inverso 1-por-2 es "0,5".</p>
         <div class="row-actions">
+          <button class="btn btn-ghost btn-sm" data-action="dedupe-splits" title="Por si una importación anterior dejó una versión sin ajustar de alguna compra junto a la ya corregida">${icon("trash", 13)} Quitar duplicados de un desdoblamiento</button>
           <button class="btn btn-primary btn-sm" data-action="add-split">${icon("plus", 13)} Aplicar desdoblamiento</button>
         </div>
       </div>
@@ -2344,6 +2406,23 @@ function removeSplitAction(id) {
   render();
 }
 
+function dedupeSplitsManualAction() {
+  const removed = dedupeSplitDuplicateTransactions();
+  if (removed) {
+    const tickers = new Set(state.splits.map((s) => s.ticker));
+    tickers.forEach((sym) => {
+      const { avgCostUsd, avgCostBrl } = recomputeCostBasisFromTransactions(sym);
+      state.portfolio = state.portfolio.map((row) => (row.ticker === sym ? { ...row, avgCost: avgCostUsd, avgCostBrl } : row));
+    });
+    persistPortfolio();
+  }
+  resetPosicoesState();
+  state.posicoes.splitMessage = removed
+    ? `Se eliminaron ${removed} transacción(es) duplicada(s) (versión sin ajustar por un desdoblamiento). Precio promedio recalculado.`
+    : "No encontré transacciones duplicadas por desdoblamientos.";
+  render();
+}
+
 function addTransaction() {
   const p = state.posicoes;
   const f = p.txForm;
@@ -2450,7 +2529,12 @@ function importPurchasesFile(file) {
         const dateRaw = cols[idx.date] || "";
         const date = dateRaw ? new Date(dateRaw).toISOString() : new Date().toISOString();
         const fxFromFile = idx.fx !== -1 ? parseNum(cols[idx.fx]) || null : null;
-        const rec = { ticker: sym, date, type, qty: parseQty(cols[idx.qty]), price: parseNum(cols[idx.price]), fx: fxFromFile };
+        // Si ya se registró un desdoblamiento para este ticker, la fila cruda del CSV (con la
+        // cantidad/precio originales, sin ajustar) se ajusta a la MISMA escala que ya tienen
+        // las transacciones guardadas — así una reimportación no agrega una versión duplicada
+        // y desajustada de una compra que ya estaba correctamente ajustada por el split.
+        const { qty: adjQty, price: adjPrice } = applySplitsToRawValue(sym, date, parseQty(cols[idx.qty]), parseNum(cols[idx.price]));
+        const rec = { ticker: sym, date, type, qty: adjQty, price: adjPrice, fx: fxFromFile };
         const key = txKey(rec);
         if (!existingKeys.has(key)) {
           existingKeys.add(key);
@@ -2468,6 +2552,11 @@ function importPurchasesFile(file) {
       });
       persistTransactions();
 
+      // Limpieza defensiva: si una importación ANTERIOR a este arreglo ya dejó guardada una
+      // versión cruda (sin ajustar) de alguna compra afectada por un split junto a la versión
+      // correcta, se elimina la cruda ahora.
+      const duplicatesRemoved = dedupeSplitDuplicateTransactions();
+
       // El precio promedio se recalcula a partir de TODO el historial de transacciones ya
       // persistido (no solo de las filas de este archivo), para que sea correcto incluso si
       // el CSV importado es parcial o se reimporta más de una vez.
@@ -2477,6 +2566,7 @@ function importPurchasesFile(file) {
         const sym = rawSym.includes(":") ? rawSym.split(":").pop() : rawSym;
         if (sym) tickersInFile.add(sym);
       });
+      state.splits.forEach((s) => tickersInFile.add(s.ticker)); // por si la limpieza afectó un ticker que no estaba en este archivo
 
       let matched = 0;
       tickersInFile.forEach((sym) => {
@@ -2492,7 +2582,8 @@ function importPurchasesFile(file) {
         : ["No encontré ningún ticker de ese archivo que coincida con tu carteira."];
       state.posicoes.importPurchasesMessage = matched
         ? `Precio de compra actualizado para ${matched} activo(s).` +
-          (fxBackfilledFromCsv ? ` Se completó el cambio histórico (columna "fx") de ${fxBackfilledFromCsv} transacción(es) que ya tenías guardadas.` : "")
+          (fxBackfilledFromCsv ? ` Se completó el cambio histórico (columna "fx") de ${fxBackfilledFromCsv} transacción(es) que ya tenías guardadas.` : "") +
+          (duplicatesRemoved ? ` Se eliminaron ${duplicatesRemoved} transacción(es) duplicada(s) (de una versión sin ajustar por un desdoblamiento).` : "")
         : null;
       render();
     } catch (err) {
@@ -2668,6 +2759,7 @@ function handleAction(action, el) {
     case "trigger-import-purchases": document.getElementById("import-purchases-input")?.click(); break;
     case "add-transaction": addTransaction(); break;
     case "add-split": addSplitAction(); break;
+    case "dedupe-splits": dedupeSplitsManualAction(); break;
     case "remove-split": removeSplitAction(id); break;
     case "select-ticker-result": selectTickerResult(el.dataset.symbol); break;
     case "fetch-quotes": fetchQuotes(); break;
