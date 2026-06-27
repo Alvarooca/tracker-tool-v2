@@ -1025,6 +1025,22 @@ async function backfillHistoricalFx() {
   render();
 }
 
+// Filtra state.history según el filtro de período activo en la pestaña Historial ("all",
+// "month", "year", o un año puntual como "2023"). Se usa tanto para dibujar los gráficos como
+// para que "Comparar con S&P 500"/"Comparar con CDI" comparen contra ESE mismo período en vez
+// de siempre contra el historial completo.
+function getPeriodFilteredHistory(periodFilter) {
+  const sorted = [...state.history].sort((a, b) => new Date(a.date) - new Date(b.date));
+  const currentYear = new Date().getFullYear();
+  const currentMonthKey = todayYMD().slice(0, 7);
+  return sorted.filter((h) => {
+    if (periodFilter === "all") return true;
+    if (periodFilter === "month") return String(h.date).slice(0, 7) === currentMonthKey;
+    if (periodFilter === "year") return new Date(h.date).getFullYear() === currentYear;
+    return String(new Date(h.date).getFullYear()) === periodFilter;
+  });
+}
+
 function resetHistoricoState() {
   const earliestTx = state.transactions.length
     ? state.transactions.reduce((min, t) => (t.date < min ? t.date : min), state.transactions[0].date)
@@ -1045,10 +1061,6 @@ function resetHistoricoState() {
     cdiStatus: "idle",
     cdiPct: null,
     cdiError: null,
-    ibovStatus: "idle",
-    ibovPct: null,
-    ibovPctInput: "",
-    ibovError: null,
     periodFilter: "all",
     importFromDate: defaultFrom,
     importToDate: todayYMD(),
@@ -1064,14 +1076,14 @@ async function compareSpx() {
     render();
     return;
   }
-  const sorted = [...state.history].sort((a, b) => new Date(a.date) - new Date(b.date));
-  if (!sorted.length) return;
+  const periodFiltered = getPeriodFilteredHistory(hs.periodFilter);
+  if (!periodFiltered.length) return;
   hs.spxStatus = "loading";
   hs.spxError = null;
   render();
   try {
-    const start = sorted[0].date.slice(0, 10);
-    const end = new Date().toISOString().slice(0, 10);
+    const start = periodFiltered[0].date.slice(0, 10);
+    const end = periodFiltered[periodFiltered.length - 1].date.slice(0, 10);
     const url = `https://api.twelvedata.com/time_series?symbol=SPY&interval=1day&start_date=${start}&end_date=${end}&apikey=${encodeURIComponent(twelveKey)}`;
     const resp = await fetch(url);
     const data = await resp.json();
@@ -1091,19 +1103,18 @@ async function compareSpx() {
 
 // MEJORA #4 — Comparación contra el CDI, vía la API gratuita y sin clave del Banco Central
 // (serie 12 = CDI diario, % al día). Algunos navegadores pueden bloquear esta llamada por
-// CORS si el Banco Central no autoriza el origen — en ese caso se avisa y queda igual el
-// campo manual de Ibovespa de al lado como alternativa para comparar a mano.
+// CORS si el Banco Central no autoriza el origen — en ese caso se avisa.
 async function compareCdi() {
   const hs = state.historico;
-  const sorted = [...state.history].sort((a, b) => new Date(a.date) - new Date(b.date));
-  if (!sorted.length) return;
+  const periodFiltered = getPeriodFilteredHistory(hs.periodFilter);
+  if (!periodFiltered.length) return;
   hs.cdiStatus = "loading";
   hs.cdiError = null;
   render();
   try {
     const toBcbDate = (ymd) => { const [y, m, d] = ymd.split("-"); return `${d}/${m}/${y}`; };
-    const start = toBcbDate(sorted[0].date.slice(0, 10));
-    const end = toBcbDate(new Date().toISOString().slice(0, 10));
+    const start = toBcbDate(periodFiltered[0].date.slice(0, 10));
+    const end = toBcbDate(periodFiltered[periodFiltered.length - 1].date.slice(0, 10));
     const url = `https://api.bcb.gov.br/dados/serie/bcdata.sgs.12/dados?formato=json&dataInicial=${start}&dataFinal=${end}`;
     const resp = await fetch(url);
     if (!resp.ok) throw new Error("No pude conectarme a la API del Banco Central.");
@@ -1116,8 +1127,7 @@ async function compareCdi() {
     });
     hs.cdiPct = (factor - 1) * 100;
   } catch (err) {
-    hs.cdiError =
-      "No pude buscar el CDI automáticamente (puede ser un bloqueo de CORS del navegador a la API del Banco Central). Puedes comparar a mano con el campo de Ibovespa de abajo mientras tanto.";
+    hs.cdiError = "No pude buscar el CDI automáticamente (puede ser un bloqueo de CORS del navegador a la API del Banco Central).";
   }
   hs.cdiStatus = "idle";
   render();
@@ -1729,6 +1739,27 @@ function renderUnrealized(rows) {
   if (!withCost.length) return "";
   const fx = parseNum(state.posicoes.fxRateInput);
 
+  // Dividendos NETOS (ya con la retención de EE. UU. aplicada) por ticker, para sumarlos a la
+  // ganancia/pérdida — si no, esta tarjeta subestima el resultado real de los activos que pagan
+  // dividendo. La conversión a reales usa el cambio histórico GUARDADO en cada transacción de
+  // dividendo (el de ese día real), y solo recurre al cambio de HOY como aproximación si ese
+  // dato faltara (igual filosofía que el resto de esta tarjeta con compras sin cambio histórico).
+  const dividendTaxPct = parseNum(state.posicoes.dividendTaxPct) || 0;
+  const dividendsByTicker = {};
+  state.transactions
+    .filter((t) => t.type === "dividend")
+    .forEach((t) => {
+      const gross = t.qty * t.price;
+      const net = gross * (1 - dividendTaxPct / 100);
+      const hasOwnFx = typeof t.fx === "number" && t.fx > 0;
+      const fxForTx = hasOwnFx ? t.fx : fx;
+      const d = dividendsByTicker[t.ticker] || { netUsd: 0, netBrl: 0, anyApprox: false };
+      d.netUsd += net;
+      if (fxForTx) d.netBrl += net * fxForTx;
+      if (!hasOwnFx) d.anyApprox = true;
+      dividendsByTicker[t.ticker] = d;
+    });
+
   let totalCostUsd = 0;
   let totalNowUsd = 0;
   let totalCostBrlKnown = 0; // costo en reales SOLO de los activos con cambio histórico conocido
@@ -1736,6 +1767,8 @@ function renderUnrealized(rows) {
   let approxCostUsd = 0; // costo/valor (US$) de los activos que todavía usan aproximación
   let approxNowUsd = 0;
   let anyApproximated = false;
+  let totalDivUsd = 0;
+  let totalDivBrl = 0;
 
   const itemsHtml = withCost
     .map((r) => {
@@ -1746,55 +1779,64 @@ function renderUnrealized(rows) {
       const nowValueUsd = hasPrice ? price * qty : costBasisUsd;
       totalCostUsd += costBasisUsd;
       totalNowUsd += nowValueUsd;
-      const gainUsd = nowValueUsd - costBasisUsd;
+      const priceGainUsd = nowValueUsd - costBasisUsd; // solo efecto precio, sin dividendos
+      const div = dividendsByTicker[r.ticker] || { netUsd: 0, netBrl: 0, anyApprox: false };
+      totalDivUsd += div.netUsd;
+      totalDivBrl += div.netBrl;
+      const gainUsd = priceGainUsd + div.netUsd; // ganancia TOTAL: precio + dividendos netos
       const pctUsd = costBasisUsd ? (gainUsd / costBasisUsd) * 100 : 0;
 
       const hasHistoricalFx = typeof r.avgCostBrl === "number" && r.avgCostBrl > 0;
       let gainBrl = null;
       let approximated = false;
-      let fxEffectBrl = null; // parte de la ganancia en reales que viene SOLO del cambio (no del precio)
+      let fxEffectBrl = null; // parte de la ganancia en reales que viene SOLO del cambio (no del precio ni del dividendo)
       if (hasPrice && fx) {
         if (hasHistoricalFx) {
           const costBasisBrl = r.avgCostBrl * qty;
           const nowValueBrl = price * qty * fx;
-          gainBrl = nowValueBrl - costBasisBrl;
-          // gainBrl = (efecto precio, ya convertido al cambio de HOY) + (efecto cambiario, el
-          // resto). El "efecto precio" es exactamente gainUsd × fx — el mismo número que ya se
-          // ve reflejado al comparar las columnas Compra/Actual — así el desglose siempre cierra
+          const priceGainBrl = nowValueBrl - costBasisBrl;
+          gainBrl = priceGainBrl + div.netBrl;
+          // priceGainBrl = (efecto precio, ya convertido al cambio de HOY) + (efecto cambiario).
+          // El "efecto precio" es exactamente priceGainUsd × fx — el mismo número que ya se ve
+          // reflejado al comparar las columnas Compra/Actual — así el desglose siempre cierra
           // exacto contra esas dos columnas, en vez de mostrar un % que parece no relacionarse
           // con ellas (que es justamente lo que generaba la confusión).
-          const priceEffectBrl = gainUsd * fx;
-          fxEffectBrl = gainBrl - priceEffectBrl;
+          const priceEffectBrl = priceGainUsd * fx;
+          fxEffectBrl = priceGainBrl - priceEffectBrl;
           totalCostBrlKnown += costBasisBrl;
           totalNowBrlKnown += nowValueBrl;
         } else {
-          gainBrl = gainUsd * fx;
+          gainBrl = priceGainUsd * fx + div.netBrl;
           approximated = true;
           anyApproximated = true;
           approxCostUsd += costBasisUsd;
           approxNowUsd += nowValueUsd;
         }
       }
-      const approxBadge = approximated
-        ? ` <span class="muted" title="Se usó el cambio de hoy como aproximación: falta el cambio histórico de alguna compra de este activo.">≈</span>`
+      const approxBadge = approximated || div.anyApprox
+        ? ` <span class="muted" title="Se usó el cambio de hoy como aproximación: falta el cambio histórico de alguna compra o dividendo de este activo.">≈</span>`
         : "";
-      // El % que se muestra siempre corresponde al precio en dólares (Compra vs Actual), para
-      // que nunca contradiga esas dos columnas. El efecto del cambio (cuando se conoce el
-      // histórico) se muestra aparte, en reales, como una línea adicional.
+      // El % que se muestra siempre corresponde al precio + dividendos en dólares (Compra vs
+      // Actual + dividendos netos), para que nunca contradiga esas dos columnas. El efecto del
+      // cambio (cuando se conoce el histórico) y los dividendos se muestran aparte, en reales.
       const fxLine =
         fxEffectBrl !== null
           ? `<br><span class="small muted">cambio: ${fxEffectBrl >= 0 ? "+" : ""}${fmtBRL(fxEffectBrl)}</span>`
+          : "";
+      const divLine =
+        div.netUsd
+          ? `<br><span class="small muted">dividendos: +${gainBrl !== null ? fmtBRL(div.netBrl) : `US$ ${div.netUsd.toFixed(2)}`}</span>`
           : "";
       return `<tr>
         <td><div class="ticker-cell">${avatarHtml(r.ticker, state.posicoes?.logos?.[r.ticker], 20)}<span><b>${escapeHtml(r.ticker)}</b></span></div></td>
         <td class="num small">$${r.avgCost.toFixed(2)}</td>
         <td class="num small">${hasPrice ? "$" + price.toFixed(2) : "—"}</td>
-        <td class="num ${hasPrice ? (gainUsd >= 0 ? "up" : "down") : "muted"}"><b>${hasPrice ? (gainBrl !== null ? fmtBRL(gainBrl) : `US$ ${gainUsd.toFixed(2)}`) : "—"}${approxBadge}</b>${hasPrice ? `<br><span class="small">${fmtPct(pctUsd)}</span>${fxLine}` : ""}</td>
+        <td class="num ${hasPrice ? (gainUsd >= 0 ? "up" : "down") : "muted"}"><b>${hasPrice ? (gainBrl !== null ? fmtBRL(gainBrl) : `US$ ${gainUsd.toFixed(2)}`) : "—"}${approxBadge}</b>${hasPrice ? `<br><span class="small">${fmtPct(pctUsd)}</span>${fxLine}${divLine}` : ""}</td>
       </tr>`;
     })
     .join("");
 
-  const totalGainUsd = totalNowUsd - totalCostUsd;
+  const totalGainUsd = totalNowUsd - totalCostUsd + totalDivUsd;
   const totalPctUsd = totalCostUsd ? (totalGainUsd / totalCostUsd) * 100 : 0;
 
   // El total combina lo calculado con el cambio histórico real (para los activos que ya lo
@@ -1805,7 +1847,7 @@ function renderUnrealized(rows) {
   if (fx) {
     const approxGainBrl = (approxNowUsd - approxCostUsd) * fx;
     const totalCostBrlMixed = totalCostBrlKnown + approxCostUsd * fx;
-    totalGainBrl = totalNowBrlKnown - totalCostBrlKnown + approxGainBrl;
+    totalGainBrl = totalNowBrlKnown - totalCostBrlKnown + approxGainBrl + totalDivBrl;
     totalPctBrl = totalCostBrlMixed ? (totalGainBrl / totalCostBrlMixed) * 100 : 0;
   }
 
@@ -1817,10 +1859,10 @@ function renderUnrealized(rows) {
       <h2 class="card-title">Ganancia/pérdida no realizada</h2>
       <span class="${totalGainUsd >= 0 ? "up" : "down"} small"><b>${totalGainBrl !== null ? fmtBRL(totalGainBrl) : `US$ ${totalGainUsd.toFixed(2)}`} (${fmtPct(totalPctBrl)})</b></span>
     </div>
-    <p class="muted small">Compara el precio promedio de compra con el precio actual de cada activo, en dólares${fx ? ". La ganancia/pérdida en reales se separa en el efecto del precio (el % siempre corresponde a comparar Compra vs Actual en dólares) y el efecto del cambio desde el día de cada compra, para que ambos números sean consistentes entre sí." : ". Configura el cambio USD/BRL arriba para verlo también en reales."}</p>
+    <p class="muted small">Compara el precio promedio de compra con el precio actual de cada activo, en dólares, sumando los dividendos netos ya cobrados${totalDivUsd ? ` (US$ ${totalDivUsd.toFixed(2)} en total)` : ""}${fx ? ". La ganancia/pérdida en reales se separa en el efecto del precio (el % siempre corresponde a comparar Compra vs Actual + dividendos en dólares), el efecto del cambio desde el día de cada compra, y los dividendos, para que los números sean consistentes entre sí." : ". Configura el cambio USD/BRL arriba para verlo también en reales."}</p>
     ${
       anyApproximated
-        ? `<div class="banner banner-warn">${icon("alert-triangle", 15)} Los activos marcados con "≈" todavía no tienen el cambio histórico de alguna compra, así que se aproximan con el cambio de HOY — por eso pueden no coincidir con otras apps (como Kinvo), que sí usan el cambio del día de cada compra. Toca "${backfillLabel}" abajo para corregirlo.</div>`
+        ? `<div class="banner banner-warn">${icon("alert-triangle", 15)} Los activos marcados con "≈" todavía no tienen el cambio histórico de alguna compra o dividendo, así que se aproximan con el cambio de HOY — por eso pueden no coincidir con otras apps (como Kinvo), que sí usan el cambio del día de cada operación. Toca "${backfillLabel}" abajo para corregirlo.</div>`
         : ""
     }
     <div class="table-scroll"><table class="table">
@@ -2158,14 +2200,7 @@ function renderHistorico() {
   const currentMonthKey = todayYMD().slice(0, 7);
   const pastYears = allYears.filter((y) => y < currentYear);
 
-  const entryInPeriod = (h) => {
-    const f = hs.periodFilter;
-    if (f === "all") return true;
-    if (f === "month") return String(h.date).slice(0, 7) === currentMonthKey;
-    if (f === "year") return new Date(h.date).getFullYear() === currentYear;
-    return String(new Date(h.date).getFullYear()) === f;
-  };
-  const periodFiltered = sorted.filter(entryInPeriod);
+  const periodFiltered = getPeriodFilteredHistory(hs.periodFilter);
 
   const periodLabel = { all: "Todo", month: "este mes", year: "este año" }[hs.periodFilter] || `de ${hs.periodFilter}`;
   const periodPillsHtml = `
@@ -2293,13 +2328,6 @@ function renderHistorico() {
         totalReturnPct > hs.cdiPct ? "— le vas ganando 🎯" : "— el CDI te va ganando"
       }</p>`
     : "";
-  const ibovDiffHtml =
-    hs.ibovPctInput && parseNum(hs.ibovPctInput)
-      ? `<p class="small muted" style="margin-top:4px">Ibovespa en el mismo período: <span class="${parseNum(hs.ibovPctInput) >= 0 ? "up" : "down"}"><b>${fmtPct(parseNum(hs.ibovPctInput))}</b></span> ${
-          totalReturnPct > parseNum(hs.ibovPctInput) ? "— le vas ganando 🎯" : "— el índice te va ganando"
-        }</p>`
-      : "";
-
 
   const monthly = {};
   periodFiltered.forEach((h) => {
@@ -2331,12 +2359,6 @@ function renderHistorico() {
         </div>
         ${spxResultHtml}
         ${cdiResultHtml}
-        <div class="tx-form-row" style="margin-top:8px">
-          <span class="muted small" style="align-self:center">Ibovespa del período (%, a mano)</span>
-          <input class="input-cell" inputmode="decimal" data-bind="ibovPctInput" value="${escapeAttr(hs.ibovPctInput)}" placeholder="ej. 12,4" style="max-width:90px">
-        </div>
-        <p class="upload-hint">No hay una fuente gratis confiable para buscar el Ibovespa automáticamente — cópialo de B3, Google Finance, etc. y pégalo acá.</p>
-        ${ibovDiffHtml}
       </div>`
     : "";
 
@@ -2620,6 +2642,7 @@ async function importRealHistory() {
     let any = false;
     txs.forEach((t) => {
       if (new Date(t.date).getTime() > cutoff) return;
+      if (t.type === "dividend") return; // un dividendo no cambia la cantidad de acciones
       any = true;
       qty += t.type === "buy" ? t.qty : -t.qty;
     });
@@ -3324,7 +3347,16 @@ function handleAction(action, el) {
     case "edit-entry": startEditEntry(id); break;
     case "compare-spx": compareSpx(); break;
     case "compare-cdi": compareCdi(); break;
-    case "set-period": state.historico.periodFilter = el.dataset.period; render(); break;
+    case "set-period":
+      state.historico.periodFilter = el.dataset.period;
+      // El resultado de "Comparar con S&P 500/CDI" quedó calculado para el período ANTERIOR;
+      // se limpia para que no parezca que ya compara el período nuevo sin haber tocado el botón.
+      state.historico.spxPct = null;
+      state.historico.spxError = null;
+      state.historico.cdiPct = null;
+      state.historico.cdiError = null;
+      render();
+      break;
     case "cancel-entry-edit": cancelEditEntry(); break;
     case "save-entry-edit": saveEntryEdit(); break;
     case "clear-history": clearHistoryAction(); break;
@@ -3394,9 +3426,6 @@ root.addEventListener("input", (e) => {
     state.historico.importFromDate = el.value;
   } else if (bind === "importToDate") {
     state.historico.importToDate = el.value;
-  } else if (bind === "ibovPctInput") {
-    state.historico.ibovPctInput = el.value;
-    renderPreservingFocus();
   } else if (bind === "paste") {
     state.hoje.pasteText = el.value;
     const btn = document.querySelector('[data-action="parse-pasted"]');
