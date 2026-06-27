@@ -208,6 +208,28 @@ html, body { margin: 0; padding: 0; background: var(--bg-app); }
 .chart-wrap { width: 100%; overflow: hidden; }
 .chart-svg { display: block; }
 .chart-svg text { font-family: 'IBM Plex Mono', monospace; fill: var(--text-muted2); font-size: 12px; }
+.chart-svg .chart-grid-line { stroke: var(--border); stroke-width: 1; stroke-dasharray: 2.5 4; }
+.chart-svg .chart-zero-line { stroke: var(--text-dim); stroke-width: 1; }
+.chart-svg .chart-axis-label { fill: var(--text-dim); font-size: 10.5px; }
+.chart-svg .chart-line-up { stroke: var(--up); }
+.chart-svg .chart-line-down { stroke: var(--down); }
+.chart-svg .chart-dot-ring { fill: var(--bg-card); }
+.chart-svg .chart-dot-up { fill: var(--up); }
+.chart-svg .chart-dot-down { fill: var(--down); }
+.chart-svg .chart-bar-up { fill: var(--up); }
+.chart-svg .chart-bar-down { fill: var(--down); }
+.chart-svg .chart-line-draw {
+  stroke-dasharray: 1400;
+  stroke-dashoffset: 1400;
+  animation: chart-draw 1000ms cubic-bezier(.2, .7, .3, 1) forwards;
+}
+.chart-svg .chart-fade-in { opacity: 0; animation: chart-fade 500ms ease-out 200ms forwards; }
+@keyframes chart-draw { to { stroke-dashoffset: 0; } }
+@keyframes chart-fade { to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .chart-svg .chart-line-draw { animation: none; stroke-dashoffset: 0; }
+  .chart-svg .chart-fade-in { animation: none; opacity: 1; }
+}
 
 button:focus-visible, input:focus-visible, textarea:focus-visible {
   outline: 2px solid var(--accent-gold);
@@ -1083,21 +1105,67 @@ function saveEntryEdit() {
 /* ---------------------------------------------------------------------- */
 
 function fmtK(v) {
-  return `${(v / 1000).toFixed(1)}k`;
+  if (v === 0) return "0";
+  const abs = Math.abs(v);
+  if (abs < 1000) return v.toFixed(abs < 10 ? 1 : 0);
+  return `${(v / 1000).toFixed(abs < 10000 ? 1 : 0)}k`;
 }
+
+// Calcula "ticks" redondos para el eje Y (estilo 0 / 5k / 10k en vez de 0 / 4.8k / 9.6k), igual
+// que hacen las librerías de gráficos profesionales — se ve mucho más prolijo que dividir el
+// rango real en N partes iguales sin redondear.
+function niceAxisTicks(rawMin, rawMax, targetCount = 4) {
+  const span = rawMax - rawMin || 1;
+  const rawStep = span / targetCount;
+  const mag = Math.pow(10, Math.floor(Math.log10(rawStep)));
+  const norm = rawStep / mag;
+  const step = (norm < 1.5 ? 1 : norm < 3 ? 2 : norm < 7 ? 5 : 10) * mag;
+  const niceMin = Math.floor(rawMin / step) * step;
+  const niceMax = Math.ceil(rawMax / step) * step;
+  const ticks = [];
+  for (let v = niceMin; v <= niceMax + step * 0.5; v += step) ticks.push(Math.round(v * 1000) / 1000);
+  return { min: niceMin, max: niceMax === niceMin ? niceMin + step : niceMax, ticks };
+}
+
+// Curva suave (Catmull-Rom → Bézier) en vez de segmentos rectos entre puntos — el mismo efecto
+// de "tensión" que usan Chart.js/D3 para que la línea se vea fluida en vez de quebrada.
+function smoothPathD(points) {
+  if (!points.length) return "";
+  if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
+  let d = `M ${points[0].x} ${points[0].y}`;
+  for (let i = 0; i < points.length - 1; i++) {
+    const p0 = points[i - 1] || points[i];
+    const p1 = points[i];
+    const p2 = points[i + 1];
+    const p3 = points[i + 2] || p2;
+    const c1x = p1.x + (p2.x - p0.x) / 6;
+    const c1y = p1.y + (p2.y - p0.y) / 6;
+    const c2x = p2.x - (p3.x - p1.x) / 6;
+    const c2y = p2.y - (p3.y - p1.y) / 6;
+    d += ` C ${c1x.toFixed(2)} ${c1y.toFixed(2)}, ${c2x.toFixed(2)} ${c2y.toFixed(2)}, ${p2.x.toFixed(2)} ${p2.y.toFixed(2)}`;
+  }
+  return d;
+}
+
+let chartIdCounter = 0;
 
 function buildChart({ type, data, valueKey, labelKey, height = 180, maxLabels = 6 }) {
   const W = 340, H = height;
-  const padL = 42, padR = 8, padT = 12, padB = 24;
+  const padR = 10, padT = 14, padB = 24;
+  const values = data.map((d) => d[valueKey]);
+  const rawMin = Math.min(0, ...values);
+  const rawMax = Math.max(0, ...values);
+  const { min, max, ticks } = niceAxisTicks(rawMin, rawMax, type === "bar" ? 3 : 4);
+
+  const gridLabels = ticks.map(fmtK);
+  // El margen izquierdo se calcula según la etiqueta más larga que realmente se va a mostrar
+  // (p. ej. "-22.4k" necesita más espacio que "1.5k"), para que el signo "-" nunca quede
+  // cortado contra el borde del SVG.
+  const longestLabelChars = Math.max(...gridLabels.map((l) => l.length));
+  const padL = Math.max(30, 12 + longestLabelChars * 7.2);
+
   const innerW = W - padL - padR;
   const innerH = H - padT - padB;
-  const values = data.map((d) => d[valueKey]);
-  let min = Math.min(0, ...values);
-  let max = Math.max(0, ...values);
-  if (min === max) max = min + 1;
-  const range = max - min;
-  min -= range * 0.08;
-  max += range * 0.08;
 
   const xStep = data.length > 1 ? innerW / (data.length - 1) : 0;
   const xFor = (i) => (data.length > 1 ? padL + i * xStep : padL + innerW / 2);
@@ -1105,28 +1173,46 @@ function buildChart({ type, data, valueKey, labelKey, height = 180, maxLabels = 
   const zeroY = yFor(0);
 
   let gridLines = "";
-  const gridCount = 4;
-  for (let g = 0; g <= gridCount; g++) {
-    const gy = padT + (innerH / gridCount) * g;
-    const val = max - (g / gridCount) * (max - min);
-    gridLines += `<line class="chart-grid" x1="${padL}" y1="${gy}" x2="${W - padR}" y2="${gy}" stroke="#1C2128" stroke-width="1"/>`;
-    gridLines += `<text x="${padL - 6}" y="${gy + 3}" text-anchor="end">${fmtK(val)}</text>`;
-  }
+  ticks.forEach((t) => {
+    const gy = yFor(t);
+    gridLines += `<line class="chart-grid-line" x1="${padL}" y1="${gy.toFixed(2)}" x2="${W - padR}" y2="${gy.toFixed(2)}"/>`;
+    gridLines += `<text class="chart-axis-label" x="${padL - 7}" y="${(gy + 3).toFixed(2)}" text-anchor="end">${fmtK(t)}</text>`;
+  });
 
   const skip = Math.max(1, Math.ceil(data.length / maxLabels));
   let xLabels = "";
   data.forEach((d, i) => {
     if (i % skip === 0 || i === data.length - 1) {
-      xLabels += `<text x="${xFor(i)}" y="${H - 4}" text-anchor="middle">${escapeHtml(d[labelKey])}</text>`;
+      xLabels += `<text class="chart-axis-label" x="${xFor(i).toFixed(2)}" y="${H - 4}" text-anchor="middle">${escapeHtml(d[labelKey])}</text>`;
     }
   });
 
+  const fmtTooltip = (v) => Math.round(v).toLocaleString("es");
+  const id = `c${++chartIdCounter}`;
+  let defs = "";
   let body = "";
+
   if (type === "line") {
-    const points = data.map((d, i) => `${xFor(i)},${yFor(d[valueKey])}`).join(" ");
-    body += `<polyline points="${points}" fill="none" stroke="#1FD8A4" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+    const trendUp = data.length && data[data.length - 1][valueKey] >= 0;
+    const colorClass = trendUp ? "up" : "down";
+    const points = data.map((d, i) => ({ x: xFor(i), y: yFor(d[valueKey]) }));
+    const lineD = smoothPathD(points);
+    const baselineY = padT + innerH;
+    const areaD = `${lineD} L ${points[points.length - 1].x.toFixed(2)} ${baselineY} L ${points[0].x.toFixed(2)} ${baselineY} Z`;
+
+    defs += `<linearGradient id="grad-${id}" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="var(--${trendUp ? "up" : "down"})" stop-opacity="0.32"/>
+      <stop offset="100%" stop-color="var(--${trendUp ? "up" : "down"})" stop-opacity="0"/>
+    </linearGradient>`;
+
+    body += `<path d="${areaD}" fill="url(#grad-${id})" class="chart-fade-in"/>`;
+    if (min < 0 && max > 0) gridLines += `<line class="chart-zero-line" x1="${padL}" y1="${zeroY.toFixed(2)}" x2="${W - padR}" y2="${zeroY.toFixed(2)}"/>`;
+    body += `<path d="${lineD}" fill="none" class="chart-line-${colorClass} chart-line-draw" stroke-width="2.25" stroke-linejoin="round" stroke-linecap="round"/>`;
     data.forEach((d, i) => {
-      body += `<circle cx="${xFor(i)}" cy="${yFor(d[valueKey])}" r="2.2" fill="#1FD8A4"/>`;
+      const isLast = i === data.length - 1;
+      const r = isLast ? 3.6 : 2.1;
+      if (isLast) body += `<circle cx="${points[i].x.toFixed(2)}" cy="${points[i].y.toFixed(2)}" r="${r + 2}" class="chart-dot-ring chart-fade-in"/>`;
+      body += `<circle cx="${points[i].x.toFixed(2)}" cy="${points[i].y.toFixed(2)}" r="${r}" class="chart-dot-${colorClass} chart-fade-in"><title>${escapeHtml(String(d[labelKey]))}: ${fmtTooltip(d[valueKey])}</title></circle>`;
     });
   } else if (type === "bar") {
     const bw = Math.min(18, (innerW / data.length) * 0.6);
@@ -1135,13 +1221,13 @@ function buildChart({ type, data, valueKey, labelKey, height = 180, maxLabels = 
       const y = Math.min(yFor(v), zeroY);
       const h = Math.max(2, Math.abs(yFor(v) - zeroY));
       const x = xFor(i) - bw / 2;
-      const color = v >= 0 ? "#1FD8A4" : "#FF6B6B";
-      body += `<rect x="${x}" y="${y}" width="${bw}" height="${h}" rx="3" fill="${color}"/>`;
+      const colorClass = v >= 0 ? "up" : "down";
+      body += `<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${bw.toFixed(2)}" height="${h.toFixed(2)}" rx="3.5" class="chart-bar-${colorClass} chart-fade-in"><title>${escapeHtml(String(d[labelKey]))}: ${fmtTooltip(v)}</title></rect>`;
     });
-    body += `<line x1="${padL}" y1="${zeroY}" x2="${W - padR}" y2="${zeroY}" stroke="#2A313B" stroke-width="1"/>`;
+    body += `<line class="chart-zero-line" x1="${padL}" y1="${zeroY.toFixed(2)}" x2="${W - padR}" y2="${zeroY.toFixed(2)}"/>`;
   }
 
-  return `<svg class="chart-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" width="100%" height="${H}" role="img" aria-label="Gráfico">${gridLines}${body}${xLabels}</svg>`;
+  return `<svg class="chart-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" width="100%" height="${H}" role="img" aria-label="Gráfico">${defs ? `<defs>${defs}</defs>` : ""}${gridLines}${body}${xLabels}</svg>`;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1956,11 +2042,12 @@ function renderHistorico() {
 
   // El detalle del eje X depende del filtro activo:
   // - "Este mes": un punto por día de ese mes (eje X = número de día).
-  // - "Este año" o un año pasado específico: se agrupan los días en MESES (eje X = ene, feb...),
-  //   para que el gráfico no se vea apretado con cientos de puntos diarios.
-  // - "Todo": se deja el comportamiento anterior (un punto por registro, con fecha corta).
+  // - "Este año" o un año pasado específico: se agrupan los días en MESES (eje X = ene, feb...).
+  // - "Todo": se agrupan los días en AÑOS (eje X = 2021, 2022...), ya que mostrar cada registro
+  //   individual a lo largo de varios años se ve apretado y las fechas cortas no se leen bien.
   const isMonthView = hs.periodFilter === "month";
   const isYearAggregateView = hs.periodFilter === "year" || /^\d{4}$/.test(hs.periodFilter);
+  const isAllView = hs.periodFilter === "all";
   const MONTH_NAMES_SHORT = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
 
   let chartData;
@@ -1986,6 +2073,19 @@ function renderHistorico() {
       return { date: String(new Date(h.date).getDate()), total: h.total, cumulative: cum };
     });
     chartMaxLabels = 12; // un mes tiene como máximo ~23 días hábiles; con esto entran casi todos
+  } else if (isAllView) {
+    const byYear = {};
+    periodFiltered.forEach((h) => {
+      const key = String(h.date).slice(0, 4); // YYYY
+      byYear[key] = (byYear[key] || 0) + h.total;
+    });
+    const yearKeys = Object.keys(byYear).sort();
+    chartData = yearKeys.map((key) => {
+      const total = byYear[key];
+      cum += total;
+      return { date: key, total, cumulative: cum };
+    });
+    chartMaxLabels = 12; // normalmente son pocos años; entran todos sin saltarse ninguno
   } else {
     chartData = periodFiltered.map((h) => {
       cum += h.total;
@@ -2102,15 +2202,27 @@ function renderHistorico() {
         <button class="btn btn-ghost btn-sm" data-action="clear-history">${icon("trash", 13)} ${hs.confirmClear ? "¿Confirmar borrado?" : "Borrar historial"}</button>
       </div>
       ${totalReturnHtml}
-      ${monthlyHtml}
       <div class="card">
-        <h2 class="card-title">Patrimonio acumulado</h2>
+        <div class="card-title-row">
+          <h2 class="card-title">Patrimonio acumulado</h2>
+          <span class="${cum >= 0 ? "up" : "down"} small"><b>${cum >= 0 ? "+" : ""}${fmtBRL(cum)}</b></span>
+        </div>
         <div class="chart-wrap">${lineSvg}</div>
       </div>
       <div class="card">
-        <h2 class="card-title">Resultado por ${isYearAggregateView ? "mes" : "día"}</h2>
+        <h2 class="card-title">Resultado por ${isYearAggregateView ? "mes" : isAllView ? "año" : "día"}</h2>
+        ${
+          chartData.length
+            ? (() => {
+                const best = chartData.reduce((a, b) => (b.total > a.total ? b : a));
+                const worst = chartData.reduce((a, b) => (b.total < a.total ? b : a));
+                return `<p class="small muted" style="margin:2px 0 8px">Mejor <b class="up">+${fmtBRL(best.total)}</b> · Peor <b class="down">${fmtBRL(worst.total)}</b></p>`;
+              })()
+            : ""
+        }
         <div class="chart-wrap">${barSvg}</div>
       </div>
+      ${monthlyHtml}
       <div class="card">
         <h2 class="card-title">Registros</h2>
         <div class="table-scroll"><table class="table">
