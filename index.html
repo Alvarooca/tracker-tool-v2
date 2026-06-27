@@ -815,6 +815,7 @@ function resetPosicoesState() {
     dividendCheckStatus: "idle",
     dividendCheckError: null,
     missingDividends: [], // [{ ticker, date, perShare }] — pagos vistos en Finnhub que no están registrados
+    dividendsExpanded: false,
     txForm: { rowId: rows[0]?.id || "__new__", newTicker: "", newBroker: "", type: "buy", qty: "", price: "", date: todayYMD(), error: null, tickerSearchResults: [], tickerSearchStatus: "idle" },
     splitForm: { ...splitFormDefaults, error: null },
     splitMessage: null,
@@ -1065,6 +1066,8 @@ function resetHistoricoState() {
     importFromDate: defaultFrom,
     importToDate: todayYMD(),
     autoFillNotice: null,
+    recordsExpanded: false,
+    monthlyExpanded: false,
   };
 }
 
@@ -1670,16 +1673,26 @@ function renderDividendsCard() {
   const p = state.posicoes;
   const dividends = state.transactions.filter((t) => t.type === "dividend").slice().sort((a, b) => new Date(b.date) - new Date(a.date));
   const taxPct = parseNum(p.dividendTaxPct) || 0;
+  const COLLAPSED_COUNT = 6;
+  const visibleDividends = p.dividendsExpanded ? dividends : dividends.slice(0, COLLAPSED_COUNT);
 
   let totalGrossUsd = 0, totalNetUsd = 0, totalNetBrlKnown = 0, anyFx = false;
-  const rowsHtml = dividends
+  // Los totales SIEMPRE se calculan sobre TODOS los dividendos (no solo los visibles) — la
+  // lista se puede acortar para que no ocupe toda la pantalla, pero la suma de arriba nunca
+  // debe cambiar según esté expandida o no.
+  dividends.forEach((t) => {
+    const gross = t.qty * t.price;
+    const net = gross * (1 - taxPct / 100);
+    totalGrossUsd += gross;
+    totalNetUsd += net;
+    const hasFx = typeof t.fx === "number" && t.fx > 0;
+    if (hasFx) { totalNetBrlKnown += net * t.fx; anyFx = true; }
+  });
+  const rowsHtml = visibleDividends
     .map((t) => {
       const gross = t.qty * t.price;
       const net = gross * (1 - taxPct / 100);
-      totalGrossUsd += gross;
-      totalNetUsd += net;
       const hasFx = typeof t.fx === "number" && t.fx > 0;
-      if (hasFx) { totalNetBrlKnown += net * t.fx; anyFx = true; }
       return `<tr>
         <td><div class="ticker-cell">${avatarHtml(t.ticker, state.posicoes?.logos?.[t.ticker], 20)}<b>${escapeHtml(t.ticker)}</b></div></td>
         <td class="small">${fmtShortDate(t.date)}</td>
@@ -1710,6 +1723,7 @@ function renderDividendsCard() {
       <h2 class="card-title">Dividendos recibidos</h2>
       <span class="muted small">Neto: US$ ${totalNetUsd.toFixed(2)}${anyFx ? ` · R$ ${totalNetBrlKnown.toFixed(2)}` : ""}</span>
     </div>
+    <p class="muted small">Es la plata que ya cobraste en efectivo por tus acciones (ganancia <b>realizada</b>, ya con la retención de EE. UU. aplicada) — no depende de si todavía tenés esas acciones o no. Es distinto de "Ganancia/pérdida no realizada" (que es sobre el precio de lo que tenés hoy) y se cuenta aparte en el "Rendimiento total" del Histórico.</p>
     <p class="muted small">Bruto acumulado: US$ ${totalGrossUsd.toFixed(2)} · Retención EE. UU. aplicada: −US$ ${(totalGrossUsd - totalNetUsd).toFixed(2)}</p>
     <div class="tx-form-row">
       <span class="muted small" style="align-self:center">Retención EE. UU. (%)</span>
@@ -1717,7 +1731,16 @@ function renderDividendsCard() {
     </div>
     ${
       dividends.length
-        ? `<div class="table-scroll"><table class="table"><thead><tr><th>Activo</th><th>Fecha</th><th class="num">Neto</th></tr></thead><tbody>${rowsHtml}</tbody></table></div>`
+        ? `<div class="table-scroll"><table class="table"><thead><tr><th>Activo</th><th>Fecha</th><th class="num">Neto</th></tr></thead><tbody>${rowsHtml}</tbody></table></div>
+           ${
+             dividends.length > COLLAPSED_COUNT
+               ? `<div class="row-actions">
+                   <button class="btn btn-ghost btn-sm" data-action="toggle-dividends-expanded">
+                     ${icon(p.dividendsExpanded ? "chevron-up" : "chevron-down", 13)} ${p.dividendsExpanded ? "Mostrar menos" : `Ver los ${dividends.length} dividendos`}
+                   </button>
+                 </div>`
+               : ""
+           }`
         : `<p class="muted small">Todavía no hay dividendos registrados. Impórtalos en el CSV (type=dividend) o agrégalos en "Precio de compra" → tipo "Dividendo".</p>`
     }
     ${
@@ -1739,27 +1762,6 @@ function renderUnrealized(rows) {
   if (!withCost.length) return "";
   const fx = parseNum(state.posicoes.fxRateInput);
 
-  // Dividendos NETOS (ya con la retención de EE. UU. aplicada) por ticker, para sumarlos a la
-  // ganancia/pérdida — si no, esta tarjeta subestima el resultado real de los activos que pagan
-  // dividendo. La conversión a reales usa el cambio histórico GUARDADO en cada transacción de
-  // dividendo (el de ese día real), y solo recurre al cambio de HOY como aproximación si ese
-  // dato faltara (igual filosofía que el resto de esta tarjeta con compras sin cambio histórico).
-  const dividendTaxPct = parseNum(state.posicoes.dividendTaxPct) || 0;
-  const dividendsByTicker = {};
-  state.transactions
-    .filter((t) => t.type === "dividend")
-    .forEach((t) => {
-      const gross = t.qty * t.price;
-      const net = gross * (1 - dividendTaxPct / 100);
-      const hasOwnFx = typeof t.fx === "number" && t.fx > 0;
-      const fxForTx = hasOwnFx ? t.fx : fx;
-      const d = dividendsByTicker[t.ticker] || { netUsd: 0, netBrl: 0, anyApprox: false };
-      d.netUsd += net;
-      if (fxForTx) d.netBrl += net * fxForTx;
-      if (!hasOwnFx) d.anyApprox = true;
-      dividendsByTicker[t.ticker] = d;
-    });
-
   let totalCostUsd = 0;
   let totalNowUsd = 0;
   let totalCostBrlKnown = 0; // costo en reales SOLO de los activos con cambio histórico conocido
@@ -1767,8 +1769,6 @@ function renderUnrealized(rows) {
   let approxCostUsd = 0; // costo/valor (US$) de los activos que todavía usan aproximación
   let approxNowUsd = 0;
   let anyApproximated = false;
-  let totalDivUsd = 0;
-  let totalDivBrl = 0;
 
   const itemsHtml = withCost
     .map((r) => {
@@ -1779,64 +1779,55 @@ function renderUnrealized(rows) {
       const nowValueUsd = hasPrice ? price * qty : costBasisUsd;
       totalCostUsd += costBasisUsd;
       totalNowUsd += nowValueUsd;
-      const priceGainUsd = nowValueUsd - costBasisUsd; // solo efecto precio, sin dividendos
-      const div = dividendsByTicker[r.ticker] || { netUsd: 0, netBrl: 0, anyApprox: false };
-      totalDivUsd += div.netUsd;
-      totalDivBrl += div.netBrl;
-      const gainUsd = priceGainUsd + div.netUsd; // ganancia TOTAL: precio + dividendos netos
+      const gainUsd = nowValueUsd - costBasisUsd;
       const pctUsd = costBasisUsd ? (gainUsd / costBasisUsd) * 100 : 0;
 
       const hasHistoricalFx = typeof r.avgCostBrl === "number" && r.avgCostBrl > 0;
       let gainBrl = null;
       let approximated = false;
-      let fxEffectBrl = null; // parte de la ganancia en reales que viene SOLO del cambio (no del precio ni del dividendo)
+      let fxEffectBrl = null; // parte de la ganancia en reales que viene SOLO del cambio (no del precio)
       if (hasPrice && fx) {
         if (hasHistoricalFx) {
           const costBasisBrl = r.avgCostBrl * qty;
           const nowValueBrl = price * qty * fx;
-          const priceGainBrl = nowValueBrl - costBasisBrl;
-          gainBrl = priceGainBrl + div.netBrl;
-          // priceGainBrl = (efecto precio, ya convertido al cambio de HOY) + (efecto cambiario).
-          // El "efecto precio" es exactamente priceGainUsd × fx — el mismo número que ya se ve
-          // reflejado al comparar las columnas Compra/Actual — así el desglose siempre cierra
+          gainBrl = nowValueBrl - costBasisBrl;
+          // gainBrl = (efecto precio, ya convertido al cambio de HOY) + (efecto cambiario, el
+          // resto). El "efecto precio" es exactamente gainUsd × fx — el mismo número que ya se
+          // ve reflejado al comparar las columnas Compra/Actual — así el desglose siempre cierra
           // exacto contra esas dos columnas, en vez de mostrar un % que parece no relacionarse
           // con ellas (que es justamente lo que generaba la confusión).
-          const priceEffectBrl = priceGainUsd * fx;
-          fxEffectBrl = priceGainBrl - priceEffectBrl;
+          const priceEffectBrl = gainUsd * fx;
+          fxEffectBrl = gainBrl - priceEffectBrl;
           totalCostBrlKnown += costBasisBrl;
           totalNowBrlKnown += nowValueBrl;
         } else {
-          gainBrl = priceGainUsd * fx + div.netBrl;
+          gainBrl = gainUsd * fx;
           approximated = true;
           anyApproximated = true;
           approxCostUsd += costBasisUsd;
           approxNowUsd += nowValueUsd;
         }
       }
-      const approxBadge = approximated || div.anyApprox
-        ? ` <span class="muted" title="Se usó el cambio de hoy como aproximación: falta el cambio histórico de alguna compra o dividendo de este activo.">≈</span>`
+      const approxBadge = approximated
+        ? ` <span class="muted" title="Se usó el cambio de hoy como aproximación: falta el cambio histórico de alguna compra de este activo.">≈</span>`
         : "";
-      // El % que se muestra siempre corresponde al precio + dividendos en dólares (Compra vs
-      // Actual + dividendos netos), para que nunca contradiga esas dos columnas. El efecto del
-      // cambio (cuando se conoce el histórico) y los dividendos se muestran aparte, en reales.
+      // El % que se muestra siempre corresponde al precio en dólares (Compra vs Actual), para
+      // que nunca contradiga esas dos columnas. El efecto del cambio (cuando se conoce el
+      // histórico) se muestra aparte, en reales, como una línea adicional.
       const fxLine =
         fxEffectBrl !== null
           ? `<br><span class="small muted">cambio: ${fxEffectBrl >= 0 ? "+" : ""}${fmtBRL(fxEffectBrl)}</span>`
-          : "";
-      const divLine =
-        div.netUsd
-          ? `<br><span class="small muted">dividendos: +${gainBrl !== null ? fmtBRL(div.netBrl) : `US$ ${div.netUsd.toFixed(2)}`}</span>`
           : "";
       return `<tr>
         <td><div class="ticker-cell">${avatarHtml(r.ticker, state.posicoes?.logos?.[r.ticker], 20)}<span><b>${escapeHtml(r.ticker)}</b></span></div></td>
         <td class="num small">$${r.avgCost.toFixed(2)}</td>
         <td class="num small">${hasPrice ? "$" + price.toFixed(2) : "—"}</td>
-        <td class="num ${hasPrice ? (gainUsd >= 0 ? "up" : "down") : "muted"}"><b>${hasPrice ? (gainBrl !== null ? fmtBRL(gainBrl) : `US$ ${gainUsd.toFixed(2)}`) : "—"}${approxBadge}</b>${hasPrice ? `<br><span class="small">${fmtPct(pctUsd)}</span>${fxLine}${divLine}` : ""}</td>
+        <td class="num ${hasPrice ? (gainUsd >= 0 ? "up" : "down") : "muted"}"><b>${hasPrice ? (gainBrl !== null ? fmtBRL(gainBrl) : `US$ ${gainUsd.toFixed(2)}`) : "—"}${approxBadge}</b>${hasPrice ? `<br><span class="small">${fmtPct(pctUsd)}</span>${fxLine}` : ""}</td>
       </tr>`;
     })
     .join("");
 
-  const totalGainUsd = totalNowUsd - totalCostUsd + totalDivUsd;
+  const totalGainUsd = totalNowUsd - totalCostUsd;
   const totalPctUsd = totalCostUsd ? (totalGainUsd / totalCostUsd) * 100 : 0;
 
   // El total combina lo calculado con el cambio histórico real (para los activos que ya lo
@@ -1847,7 +1838,7 @@ function renderUnrealized(rows) {
   if (fx) {
     const approxGainBrl = (approxNowUsd - approxCostUsd) * fx;
     const totalCostBrlMixed = totalCostBrlKnown + approxCostUsd * fx;
-    totalGainBrl = totalNowBrlKnown - totalCostBrlKnown + approxGainBrl + totalDivBrl;
+    totalGainBrl = totalNowBrlKnown - totalCostBrlKnown + approxGainBrl;
     totalPctBrl = totalCostBrlMixed ? (totalGainBrl / totalCostBrlMixed) * 100 : 0;
   }
 
@@ -1859,10 +1850,11 @@ function renderUnrealized(rows) {
       <h2 class="card-title">Ganancia/pérdida no realizada</h2>
       <span class="${totalGainUsd >= 0 ? "up" : "down"} small"><b>${totalGainBrl !== null ? fmtBRL(totalGainBrl) : `US$ ${totalGainUsd.toFixed(2)}`} (${fmtPct(totalPctBrl)})</b></span>
     </div>
-    <p class="muted small">Compara el precio promedio de compra con el precio actual de cada activo, en dólares, sumando los dividendos netos ya cobrados${totalDivUsd ? ` (US$ ${totalDivUsd.toFixed(2)} en total)` : ""}${fx ? ". La ganancia/pérdida en reales se separa en el efecto del precio (el % siempre corresponde a comparar Compra vs Actual + dividendos en dólares), el efecto del cambio desde el día de cada compra, y los dividendos, para que los números sean consistentes entre sí." : ". Configura el cambio USD/BRL arriba para verlo también en reales."}</p>
+    <p class="muted small">Responde: "si vendiera HOY todo lo que tengo, ¿cuánto ganaría o perdería?". Solo considera el precio de las acciones que <b>todavía tenés</b> — no incluye lo que ya vendiste ni los dividendos cobrados (eso vive en "Rendimiento total", en el Histórico, para no contar nada dos veces).</p>
+    <p class="muted small">Compara el precio promedio de compra con el precio actual de cada activo, en dólares${fx ? ". La ganancia/pérdida en reales se separa en el efecto del precio (el % siempre corresponde a comparar Compra vs Actual en dólares) y el efecto del cambio desde el día de cada compra, para que ambos números sean consistentes entre sí." : ". Configura el cambio USD/BRL arriba para verlo también en reales."}</p>
     ${
       anyApproximated
-        ? `<div class="banner banner-warn">${icon("alert-triangle", 15)} Los activos marcados con "≈" todavía no tienen el cambio histórico de alguna compra o dividendo, así que se aproximan con el cambio de HOY — por eso pueden no coincidir con otras apps (como Kinvo), que sí usan el cambio del día de cada operación. Toca "${backfillLabel}" abajo para corregirlo.</div>`
+        ? `<div class="banner banner-warn">${icon("alert-triangle", 15)} Los activos marcados con "≈" todavía no tienen el cambio histórico de alguna compra, así que se aproximan con el cambio de HOY — por eso pueden no coincidir con otras apps (como Kinvo), que sí usan el cambio del día de cada compra. Toca "${backfillLabel}" abajo para corregirlo.</div>`
         : ""
     }
     <div class="table-scroll"><table class="table">
@@ -2247,24 +2239,66 @@ function renderHistorico() {
   let chartMaxLabels = 6;
   let cum = 0;
   // MEJORA #3 — Rendimiento total acumulado (%), con el método TWR (time-weighted return):
-  // se encadena el retorno DIARIO de cada registro (gain del día ÷ saldo base de ESE día,
-  // que ya viene guardado en rows[].saldo de cada entrada del historial) en vez de dividir la
-  // ganancia acumulada en R$ por el saldo actual. Así, a diferencia de "Patrimonio acumulado"
-  // (que es plata, no rendimiento), este % no se distorsiona cuando metes más plata a la
+  // se encadena el retorno DIARIO de cada registro ((gain del día + dividendos cobrados ese
+  // día) ÷ saldo base de ESE día, que ya viene guardado en rows[].saldo de cada entrada del
+  // historial) en vez de dividir la ganancia acumulada en R$ por el saldo actual. Así, a
+  // diferencia de "Ganancia/pérdida no realizada" (que solo mira lo que tenés HOY), este % sí
+  // cuenta lo que ya vendiste en el camino, y no se distorsiona cuando metes más plata a la
   // cartera o retiras — es el mismo método que usan las plataformas de inversión para mostrar
   // "tu rentabilidad" de forma comparable contra un índice o el CDI.
+  //
+  // Los dividendos se suman el día en que se cobraron (con la retención de EE. UU. aplicada y
+  // convertidos a reales con el cambio histórico de ESE día). Si un dividendo cae en un día sin
+  // registro diario guardado (fin de semana, feriado, o un hueco en el historial), se acumula y
+  // se suma al primer día CON registro que aparezca después — así nunca se pierde, solo puede
+  // quedar desplazado unos días dentro de la cadena.
+  const dividendTaxPctForTwr = parseNum(state.posicoes.dividendTaxPct) || 0;
+  const fxFallbackForTwr = parseNum(state.posicoes.fxRateInput);
+  const dividendsByDayBrl = {};
+  if (periodFiltered.length) {
+    const periodStartMs = new Date(periodFiltered[0].date).getTime();
+    const periodEndMs = new Date(periodFiltered[periodFiltered.length - 1].date).getTime();
+    state.transactions
+      .filter((t) => t.type === "dividend")
+      .forEach((t) => {
+        const ts = new Date(t.date).getTime();
+        if (!Number.isFinite(ts) || ts < periodStartMs - 86400000 || ts > periodEndMs + 86400000) return; // fuera del período analizado
+        const gross = t.qty * t.price;
+        const net = gross * (1 - dividendTaxPctForTwr / 100);
+        const fxForTx = typeof t.fx === "number" && t.fx > 0 ? t.fx : fxFallbackForTwr;
+        if (!fxForTx) return; // sin cambio (ni histórico ni de hoy) no se puede convertir a reales
+        const day = String(t.date).slice(0, 10);
+        dividendsByDayBrl[day] = (dividendsByDayBrl[day] || 0) + net * fxForTx;
+      });
+  }
+  const dividendDayKeys = Object.keys(dividendsByDayBrl).sort();
+  let divPointer = 0;
+  let divCarryBrl = 0;
   let twrFactor = 1;
-  const dayReturn = (h) => {
+  // Devuelve { totalWithDiv, ret } para un registro del historial, consumiendo (una sola vez,
+  // en orden cronológico) los dividendos pendientes hasta esa fecha. NO llamar más de una vez
+  // por registro ni fuera de orden, porque el "carry" de dividendos es estado acumulado.
+  const dailyFigures = (h) => {
+    const entryDay = String(h.date).slice(0, 10);
+    while (divPointer < dividendDayKeys.length && dividendDayKeys[divPointer] <= entryDay) {
+      divCarryBrl += dividendsByDayBrl[dividendDayKeys[divPointer]];
+      divPointer++;
+    }
+    const divForThisEntry = divCarryBrl;
+    divCarryBrl = 0;
+    const totalWithDiv = h.total + divForThisEntry;
     const base = h.rows.reduce((s, r) => s + (r.saldo || 0), 0);
-    return base > 0 ? h.total / base : 0;
+    const ret = base > 0 ? totalWithDiv / base : 0;
+    return { totalWithDiv, ret };
   };
   if (isYearAggregateView) {
     const byMonth = {};
     const twrByMonth = {};
     periodFiltered.forEach((h) => {
+      const { totalWithDiv, ret } = dailyFigures(h);
       const key = String(h.date).slice(0, 7); // YYYY-MM
-      byMonth[key] = (byMonth[key] || 0) + h.total;
-      twrFactor *= 1 + dayReturn(h);
+      byMonth[key] = (byMonth[key] || 0) + totalWithDiv;
+      twrFactor *= 1 + ret;
       twrByMonth[key] = (twrFactor - 1) * 100; // se sobreescribe en orden cronológico: queda el último valor del mes
     });
     const monthKeys = Object.keys(byMonth).sort();
@@ -2277,18 +2311,20 @@ function renderHistorico() {
     chartMaxLabels = 12; // como máximo 12 meses, entran todos sin saltarse ninguno
   } else if (isMonthView) {
     chartData = periodFiltered.map((h) => {
-      cum += h.total;
-      twrFactor *= 1 + dayReturn(h);
-      return { date: String(new Date(h.date).getDate()), total: h.total, cumulative: cum, cumTwrPct: (twrFactor - 1) * 100 };
+      const { totalWithDiv, ret } = dailyFigures(h);
+      cum += totalWithDiv;
+      twrFactor *= 1 + ret;
+      return { date: String(new Date(h.date).getDate()), total: totalWithDiv, cumulative: cum, cumTwrPct: (twrFactor - 1) * 100 };
     });
     chartMaxLabels = 12; // un mes tiene como máximo ~23 días hábiles; con esto entran casi todos
   } else if (isAllView) {
     const byYear = {};
     const twrByYear = {};
     periodFiltered.forEach((h) => {
+      const { totalWithDiv, ret } = dailyFigures(h);
       const key = String(h.date).slice(0, 4); // YYYY
-      byYear[key] = (byYear[key] || 0) + h.total;
-      twrFactor *= 1 + dayReturn(h);
+      byYear[key] = (byYear[key] || 0) + totalWithDiv;
+      twrFactor *= 1 + ret;
       twrByYear[key] = (twrFactor - 1) * 100;
     });
     const yearKeys = Object.keys(byYear).sort();
@@ -2300,9 +2336,10 @@ function renderHistorico() {
     chartMaxLabels = 12; // normalmente son pocos años; entran todos sin saltarse ninguno
   } else {
     chartData = periodFiltered.map((h) => {
-      cum += h.total;
-      twrFactor *= 1 + dayReturn(h);
-      return { date: fmtShortDate(h.date), total: h.total, cumulative: cum, cumTwrPct: (twrFactor - 1) * 100 };
+      const { totalWithDiv, ret } = dailyFigures(h);
+      cum += totalWithDiv;
+      twrFactor *= 1 + ret;
+      return { date: fmtShortDate(h.date), total: totalWithDiv, cumulative: cum, cumTwrPct: (twrFactor - 1) * 100 };
     });
   }
 
@@ -2335,8 +2372,10 @@ function renderHistorico() {
     monthly[key] = (monthly[key] || 0) + h.total;
   });
   const monthNames = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
-  const monthlyRows = Object.entries(monthly)
-    .sort((a, b) => (a[0] < b[0] ? 1 : -1)) // most recent month first
+  const MONTHLY_COLLAPSED_COUNT = 6;
+  const monthlyEntriesSorted = Object.entries(monthly).sort((a, b) => (a[0] < b[0] ? 1 : -1)); // most recent month first
+  const monthlyEntriesVisible = hs.monthlyExpanded ? monthlyEntriesSorted : monthlyEntriesSorted.slice(0, MONTHLY_COLLAPSED_COUNT);
+  const monthlyRows = monthlyEntriesVisible
     .map(([key, total]) => {
       const [y, m] = key.split("-");
       const label = `${monthNames[parseInt(m, 10) - 1]} ${y}`;
@@ -2346,13 +2385,24 @@ function renderHistorico() {
       </div>`;
     })
     .join("");
-  const monthlyHtml = hs.periodFilter !== "month" && Object.keys(monthly).length > 1 ? `<div class="card"><h2 class="card-title">Resumen mensual</h2>${monthlyRows}</div>` : "";
+  const monthlyToggleHtml =
+    monthlyEntriesSorted.length > MONTHLY_COLLAPSED_COUNT
+      ? `<div class="row-actions">
+          <button class="btn btn-ghost btn-sm" data-action="toggle-monthly-expanded">
+            ${icon(hs.monthlyExpanded ? "chevron-up" : "chevron-down", 13)} ${hs.monthlyExpanded ? "Mostrar menos" : `Ver los ${monthlyEntriesSorted.length} meses`}
+          </button>
+        </div>`
+      : "";
+  const monthlyHtml =
+    hs.periodFilter !== "month" && Object.keys(monthly).length > 1
+      ? `<div class="card"><h2 class="card-title">Resumen mensual</h2>${monthlyRows}${monthlyToggleHtml}</div>`
+      : "";
 
   const totalReturnHtml = periodFiltered.length
     ? `<div class="card total-return-card">
         <span class="muted small">Rendimiento total desde ${firstDate}</span>
         <span class="total-return-value ${cum >= 0 ? "up" : "down"}">${cum >= 0 ? "+" : ""}${fmtBRL(cum)} (${fmtPct(totalReturnPct)})</span>
-        <p class="muted small" style="margin-top:2px">% calculado con retorno ponderado en el tiempo (TWR) — no se distorsiona por aportes o retiros.</p>
+        <p class="muted small" style="margin-top:2px">Responde: "¿cómo le fue a mi plata desde que empecé a invertir?". Encadena la variación de cada día (precio + cambio + dividendos cobrados ese día) con el método TWR (retorno ponderado en el tiempo), así no se distorsiona si metiste o sacaste plata en el medio. A diferencia de "Ganancia/pérdida no realizada" (en Posiciones, que solo mira el precio de lo que tenés HOY), acá también se cuenta la ganancia o pérdida de las acciones que ya vendiste en el camino, y los dividendos cobrados.</p>
         <div class="toolbar-row" style="justify-content:flex-start;margin-top:8px">
           <button class="btn btn-ghost btn-sm" data-action="compare-spx" ${hs.spxStatus === "loading" ? "disabled" : ""}>${icon("refresh", 13, hs.spxStatus === "loading" ? "spin" : "")} ${spxLabel}</button>
           <button class="btn btn-ghost btn-sm" data-action="compare-cdi" ${hs.cdiStatus === "loading" ? "disabled" : ""}>${icon("refresh", 13, hs.cdiStatus === "loading" ? "spin" : "")} ${cdiLabel}</button>
@@ -2390,8 +2440,10 @@ function renderHistorico() {
       </div>`
     : "";
 
-  const rowsHtml = [...periodFiltered]
-    .reverse()
+  const RECORDS_COLLAPSED_COUNT = 10;
+  const periodFilteredReversed = [...periodFiltered].reverse();
+  const recordsVisible = hs.recordsExpanded ? periodFilteredReversed : periodFilteredReversed.slice(0, RECORDS_COLLAPSED_COUNT);
+  const rowsHtml = recordsVisible
     .map(
       (h) => `
       <tr>
@@ -2406,6 +2458,14 @@ function renderHistorico() {
       </tr>`
     )
     .join("");
+  const recordsToggleHtml =
+    periodFilteredReversed.length > RECORDS_COLLAPSED_COUNT
+      ? `<div class="row-actions">
+          <button class="btn btn-ghost btn-sm" data-action="toggle-records-expanded">
+            ${icon(hs.recordsExpanded ? "chevron-up" : "chevron-down", 13)} ${hs.recordsExpanded ? "Mostrar menos" : `Ver los ${periodFilteredReversed.length} registros`}
+          </button>
+        </div>`
+      : "";
 
   return `
     <div class="stack">
@@ -2461,6 +2521,7 @@ function renderHistorico() {
           <thead><tr><th>Fecha</th><th class="num">Precios</th><th class="num">Cambio</th><th class="num">Total</th><th></th></tr></thead>
           <tbody>${rowsHtml}</tbody>
         </table></div>
+        ${recordsToggleHtml}
       </div>
     </div>`;
 }
@@ -3324,6 +3385,7 @@ function handleAction(action, el) {
     case "trigger-import-purchases": document.getElementById("import-purchases-input")?.click(); break;
     case "add-transaction": addTransaction(); break;
     case "check-missing-dividends": checkMissingDividends(); break;
+    case "toggle-dividends-expanded": state.posicoes.dividendsExpanded = !state.posicoes.dividendsExpanded; render(); break;
     case "quickadd-dividend": {
       const f = state.posicoes.txForm;
       const row = state.posicoes.rows.find((r) => r.ticker === el.dataset.ticker);
@@ -3347,6 +3409,8 @@ function handleAction(action, el) {
     case "edit-entry": startEditEntry(id); break;
     case "compare-spx": compareSpx(); break;
     case "compare-cdi": compareCdi(); break;
+    case "toggle-records-expanded": state.historico.recordsExpanded = !state.historico.recordsExpanded; render(); break;
+    case "toggle-monthly-expanded": state.historico.monthlyExpanded = !state.historico.monthlyExpanded; render(); break;
     case "set-period":
       state.historico.periodFilter = el.dataset.period;
       // El resultado de "Comparar con S&P 500/CDI" quedó calculado para el período ANTERIOR;
