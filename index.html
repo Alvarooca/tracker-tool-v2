@@ -3870,10 +3870,39 @@ async function sbUpsertPortfolio(portfolio) {
 
 async function sbUpsertSplits(splits) {
   if (!splits.length) return;
-  const rows = splits.map((s) => ({
+  // Deduplicar por contenido (ticker+date+ratio) antes de subir — evita que dos dispositivos
+  // que crearon el mismo split con UIDs distintos terminen con duplicados en la nube.
+  const seen = new Set();
+  const deduped = splits.filter((s) => {
+    const key = `${s.ticker}|${String(s.date).slice(0, 10)}|${s.ratio}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  const rows = deduped.map((s) => ({
     id: s.id, user_id: SB_USER, ticker: s.ticker, date: s.date, ratio: s.ratio,
   }));
   await sbRequest("POST", "splits", rows, "?on_conflict=id");
+
+  // Limpiar duplicados que ya existan en la nube (por si quedaron de versiones anteriores).
+  // Descargamos todos los splits de la nube, detectamos duplicados por contenido, y borramos
+  // los extras manteniendo solo el más antiguo (el primero que se creó).
+  const cloudAll = await sbRequest("GET", "splits", null, `?user_id=eq.${SB_USER}&select=*`);
+  if (cloudAll?.length > 1) {
+    const cloudSeen = new Set();
+    const toDelete = [];
+    cloudAll
+      .sort((a, b) => new Date(a.created_at || 0) - new Date(b.created_at || 0)) // más antiguo primero
+      .forEach((r) => {
+        const key = `${r.ticker}|${String(r.date).slice(0, 10)}|${r.ratio}`;
+        if (cloudSeen.has(key)) toDelete.push(r.id);
+        else cloudSeen.add(key);
+      });
+    if (toDelete.length) {
+      await sbRequest("DELETE", "splits", null, `?id=in.(${toDelete.join(",")})`);
+      console.log(`[supabase] Eliminados ${toDelete.length} split(s) duplicado(s) de la nube`);
+    }
+  }
 }
 
 // ── PULL — descarga datos de la nube al abrir la app ────────────────────────
@@ -3929,16 +3958,31 @@ async function syncPullFromCloud() {
       if (differs) { state.portfolio = cloudMapped; changed = true; }
     }
 
-    // Splits — deduplicar por contenido (ticker+date+ratio) además de por ID,
-    // para el caso en que el mismo split fue creado en dos dispositivos con UIDs distintos.
+    // Splits — deduplicar por contenido (ticker+date+ratio) además de por ID.
+    // Si el mismo split fue creado en dos dispositivos con UIDs distintos, ambos llegarían
+    // a la nube. Al hacer pull, filtramos por contenido para no agregar duplicados localmente.
     if (cloudSplits?.length) {
-      const splitKey = (s) => `${s.ticker}|${String(s.date).slice(0, 10)}|${s.ratio}`;
-      const localKeys = new Set((state.splits || []).map(splitKey));
-      const localIds = new Set((state.splits || []).map((s) => s.id));
+      const splitKey = (s) => `${s.ticker}|${String(s.date).slice(0, 10)}|${Number(s.ratio)}`;
+      const existingSplits = state.splits || [];
+      const localKeys = new Set(existingSplits.map(splitKey));
+      const localIds = new Set(existingSplits.map((s) => s.id));
       const newSplits = cloudSplits
         .filter((r) => !localIds.has(r.id) && !localKeys.has(splitKey({ ticker: r.ticker, date: r.date, ratio: Number(r.ratio) })))
         .map((r) => ({ id: r.id, ticker: r.ticker, date: r.date, ratio: Number(r.ratio) }));
-      if (newSplits.length) { state.splits = [...(state.splits || []), ...newSplits]; changed = true; }
+      if (newSplits.length) { state.splits = [...existingSplits, ...newSplits]; changed = true; }
+
+      // También deduplicar el estado local por si ya había duplicados de antes del fix
+      const seenKeys = new Set();
+      const dedupedLocal = (state.splits || []).filter((s) => {
+        const k = splitKey(s);
+        if (seenKeys.has(k)) return false;
+        seenKeys.add(k);
+        return true;
+      });
+      if (dedupedLocal.length !== (state.splits || []).length) {
+        state.splits = dedupedLocal;
+        changed = true;
+      }
     }
 
     // Settings — claves API y configuración (la nube gana si hay un valor y local está vacío)
@@ -4037,21 +4081,41 @@ async function requestPushPermission() {
 // Sube TODO el estado local a la nube (úsalo la primera vez para "sembrar" Supabase)
 async function syncPushAllToCloud() {
   const p = state.posicoes;
+
+  // Si hay cambios no guardados en posicoes (posicoes.dirty), sincronizamos rows → portfolio
+  // ANTES de subir a la nube para que la cantidad de acciones siempre sea la más reciente.
+  // Esto evita el caso donde el usuario agregó una transacción (que actualiza rows en memoria)
+  // pero nunca tocó "Guardar posiciones" — sin esto, la nube recibiría las cantidades viejas.
+  if (p?.dirty && p?.rows?.length) {
+    const cleaned = p.rows
+      .filter((r) => String(r.ticker).trim())
+      .map((r) => ({
+        ...r,
+        ticker: String(r.ticker).trim().toUpperCase(),
+        broker: String(r.broker).trim(),
+        quantity: parseNum(r.quantity),
+        price: parseNum(r.price) || 0,
+        saldo: Math.round(rowEffectiveValue(r) * 100) / 100,
+      }));
+    state.portfolio = cleaned;
+    try { localStorage.setItem("pnl-portfolio", JSON.stringify(state.portfolio)); } catch (_) {}
+    p.rows = cleaned.map((r) => ({ ...r }));
+    p.dirty = false;
+  }
+
+  const portfolioToUpload = p?.rows?.length ? p.rows : state.portfolio;
+
   const settings = [
     { key: "finnhub-key", user_id: SB_USER, value: p?.finnhubKey || "" },
     { key: "twelvedata-key", user_id: SB_USER, value: p?.apiKey || "" },
     { key: "fx", user_id: SB_USER, value: JSON.stringify(parseNum(p?.fxRateInput) || null) },
     { key: "dividend-tax", user_id: SB_USER, value: p?.dividendTaxPct ?? "30" },
   ].filter((s) => s.value && s.value !== "null" && s.value !== '""');
+
   await Promise.all([
     sbUpsertHistory(state.history),
     sbUpsertTransactions(state.transactions),
-    // Usamos state.posicoes.rows (estado en vivo) en lugar de state.portfolio (última versión
-    // guardada con "Guardar posiciones"), porque state.posicoes.rows refleja las cantidades y
-    // costos más recientes aunque el usuario no haya tocado "Guardar" — por ejemplo, después
-    // de importar un CSV las cantidades se actualizan en rows pero no en portfolio hasta que
-    // se guarda explícitamente.
-    sbUpsertPortfolio(state.posicoes?.rows?.length ? state.posicoes.rows : state.portfolio),
+    sbUpsertPortfolio(portfolioToUpload),
     sbUpsertSplits(state.splits || []),
     settings.length ? sbRequest("POST", "settings", settings, "?on_conflict=user_id,key") : Promise.resolve(),
   ]);
