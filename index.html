@@ -95,6 +95,7 @@ html, body { margin: 0; padding: 0; background: var(--bg-app); }
 .tape-item { font-family: 'IBM Plex Mono', monospace; font-size: 12px; display: inline-flex; gap: 7px; align-items: center; color: var(--text-secondary); }
 .tape-item b { color: var(--text-primary); font-weight: 600; }
 .tape-price { color: var(--text-secondary); font-size: 11px; opacity: .75; }
+.sync-status-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
 
 .tabbar { display: flex; gap: 4px; padding: 10px 14px 0; }
 .tab { flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; background: transparent; border: none; color: var(--text-muted); font-family: 'Inter', sans-serif; font-size: 13px; font-weight: 500; padding: 10px 8px; border-radius: 8px 8px 0 0; cursor: pointer; border-bottom: 2px solid transparent; }
@@ -503,22 +504,22 @@ function loadState() {
 
 function persistTransactions() {
   try { localStorage.setItem("pnl-transactions", JSON.stringify(state.transactions)); } catch (_) {}
+  sbUpsertTransactions(state.transactions); // fire-and-forget
 }
 
 function persistSplits() {
   try { localStorage.setItem("pnl-splits", JSON.stringify(state.splits)); } catch (_) {}
+  sbUpsertSplits(state.splits || []); // fire-and-forget
 }
 
 function persistPortfolio() {
-  try {
-    localStorage.setItem("pnl-portfolio", JSON.stringify(state.portfolio));
-  } catch (_) {}
+  try { localStorage.setItem("pnl-portfolio", JSON.stringify(state.portfolio)); } catch (_) {}
+  sbUpsertPortfolio(state.portfolio); // fire-and-forget
 }
 
 function persistHistory() {
-  try {
-    localStorage.setItem("pnl-history", JSON.stringify(state.history));
-  } catch (_) {}
+  try { localStorage.setItem("pnl-history", JSON.stringify(state.history)); } catch (_) {}
+  sbUpsertHistory(state.history); // fire-and-forget
 }
 
 // Recalcula el precio promedio de compra de un ticker a partir de TODAS sus transacciones
@@ -1595,6 +1596,15 @@ async function fetchLiveDayChange(opts = {}) {
   h.fxPctInput = fxPct !== null ? String(fxPct) : "0";
   h.error = errors.length ? errors.join(" ") : null;
   h.fetchStatus = "idle";
+
+  // Notificación push si algún activo varía más del 3% (en cualquier dirección)
+  const bigMovers = Object.entries(pctByTicker)
+    .filter(([, d]) => Math.abs(d.pct) >= 3)
+    .sort((a, b) => Math.abs(b[1].pct) - Math.abs(a[1].pct));
+  if (bigMovers.length) {
+    const lines = bigMovers.map(([sym, d]) => `${sym} ${d.pct >= 0 ? "+" : ""}${d.pct.toFixed(2)}%`).join(" · ");
+    sendPushNotification("⚠️ Movimiento fuerte en tu cartera", lines, "pnl-alert");
+  }
   // Al buscar automáticamente ya se muestra el resultado calculado por activo de inmediato
   // (sin un paso intermedio de revisión manual) — sigue pudiéndose ajustar con el lápiz "Editar valores".
   // Tocar el botón a mano NUNCA guarda en el historial: solo el proceso automático (autoSave) lo hace.
@@ -1672,6 +1682,14 @@ function saveHistoryAction() {
     state.history = [...state.history, entry];
   }
   persistHistory();
+
+  // Notificación push: avisa en todos los dispositivos que el historial se guardó
+  const totalStr = entry.total >= 0 ? `+${fmtBRL(entry.total)}` : fmtBRL(entry.total);
+  sendPushNotification(
+    "P&L Diario — Historial guardado",
+    `Resultado del día: ${totalStr} (precios ${fmtBRL(entry.priceTotal)}, cambio ${fmtBRL(entry.fxGain)})`,
+    "pnl-autosave"
+  );
 
   h.status = "saved";
   h.savedAt = nowIso;
@@ -2144,13 +2162,26 @@ function renderPosicoes() {
       </div>
 
       <div class="card">
-        <h2 class="card-title">Copia de seguridad</h2>
-        <p class="muted small">Descarga un archivo con tus posiciones, historial y claves, para no perderlos si borras los datos del sitio. Lo mismo sirve para pasar todo a otro celular.</p>
-        <div class="row-actions">
-          <button class="btn btn-ghost" data-action="export-backup">${icon("download", 15)} Exportar datos</button>
-          <button class="btn btn-ghost" data-action="trigger-import-backup">${icon("refresh", 15)} Importar datos</button>
+        <h2 class="card-title">Sincronización en la nube</h2>
+        <p class="muted small">Tu cartera se sincroniza automáticamente con Supabase cada vez que guardás algo — historial, posiciones, transacciones, splits. Al abrir la app en cualquier dispositivo, se descarga lo nuevo automáticamente.</p>
+        <div class="sync-status-row">
+          ${icon("cloud", 15, "up")} <span class="small up">Conectado a Supabase · São Paulo</span>
         </div>
-        <input type="file" id="import-backup-input" accept="application/json" hidden>
+        <div class="row-actions" style="margin-top:10px">
+          <button class="btn btn-ghost btn-sm" data-action="sync-push-all">${icon("upload", 13)} Subir todo a la nube</button>
+          <button class="btn btn-ghost btn-sm" data-action="sync-pull">${icon("download", 13)} Bajar desde la nube</button>
+          <button class="btn btn-ghost btn-sm" data-action="enable-notifications">${icon("bell", 13)} ${typeof Notification !== "undefined" && Notification.permission === "granted" ? "Notificaciones ✓" : "Activar notificaciones"}</button>
+        </div>
+        <p class="upload-hint">Usa "Subir todo" la primera vez en un dispositivo nuevo para que empiece con todos tus datos. "Bajar desde la nube" fuerza una sincronización manual si algo no llegó.</p>
+        <div class="card" style="margin-top:12px;background:var(--bg-app)">
+          <h2 class="card-title" style="font-size:13px">Copia de seguridad local</h2>
+          <p class="muted small">Exporta un archivo JSON como respaldo adicional.</p>
+          <div class="row-actions">
+            <button class="btn btn-ghost btn-sm" data-action="export-backup">${icon("download", 13)} Exportar datos</button>
+            <button class="btn btn-ghost btn-sm" data-action="trigger-import-backup">${icon("refresh", 13)} Importar datos</button>
+          </div>
+          <input type="file" id="import-backup-input" accept="application/json" hidden>
+        </div>
       </div>
     </div>`;
 }
@@ -3436,6 +3467,16 @@ function handleAction(action, el) {
     case "move-row-down": moveRow(id, 1); break;
     case "save-positions": savePositions(); break;
     case "export-backup": exportBackup(); break;
+    case "sync-push-all": syncPushAllToCloud().then(() => { alert("✅ Todos tus datos fueron subidos a la nube."); }); break;
+    case "sync-pull": syncPullFromCloud().then(() => { alert("✅ Sincronización desde la nube completada."); }); break;
+    case "enable-notifications":
+      requestPushPermission().then((r) => {
+        if (r === "granted") alert("✅ Notificaciones activadas. Te avisaremos cuando el historial se guarde y si hay movimientos fuertes.");
+        else if (r === "denied") alert("❌ Bloqueaste las notificaciones. Para activarlas, permitilas desde el ícono del candado en la barra del navegador.");
+        else if (r === "unsupported") alert("Tu navegador no soporta notificaciones push.");
+        render();
+      });
+      break;
     case "trigger-import-backup": document.getElementById("import-backup-input")?.click(); break;
     case "trigger-import-purchases": document.getElementById("import-purchases-input")?.click(); break;
     case "add-transaction": addTransaction(); break;
@@ -3751,8 +3792,232 @@ document.addEventListener("visibilitychange", () => {
 });
 
 /* ---------------------------------------------------------------------- */
-/*  Init                                                                   */
+/*  Supabase — sincronización en la nube                                  */
 /* ---------------------------------------------------------------------- */
+// La app funciona 100% offline con localStorage como siempre. Supabase es una
+// capa adicional: cada vez que se guarda algo localmente, también se sube a la
+// nube en segundo plano (fire-and-forget). Al abrir la app, si hay datos más
+// recientes en la nube que en localStorage, se descargan automáticamente.
+// Así 3-4 dispositivos siempre quedan sincronizados sin intervención manual.
+
+const SUPABASE_URL = "https://uylqfjbyouretvyfrlyy.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV5bHFmamJ5b3VyZXR2eWZybHl5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI5MjQxNzcsImV4cCI6MjA5ODUwMDE3N30.BOHnj6vsyqfsZfmcpYCLDx8tyYsS-B_SbEq40lDcSbk";
+const SB_HEADERS = { "Content-Type": "application/json", "apikey": SUPABASE_ANON_KEY, "Authorization": `Bearer ${SUPABASE_ANON_KEY}`, "Prefer": "resolution=merge-duplicates" };
+const SB_USER = "default"; // app personal, un solo usuario
+
+// Helper base para llamadas a la API REST de Supabase
+async function sbRequest(method, table, body = null, query = "") {
+  try {
+    const resp = await fetch(`${SUPABASE_URL}/rest/v1/${table}${query}`, {
+      method,
+      headers: SB_HEADERS,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (!resp.ok) {
+      const err = await resp.text();
+      console.warn(`[supabase] ${method} ${table}: ${resp.status}`, err);
+      return null;
+    }
+    const text = await resp.text();
+    return text ? JSON.parse(text) : [];
+  } catch (e) {
+    console.warn(`[supabase] ${method} ${table} error:`, e);
+    return null;
+  }
+}
+
+// ── UPSERT helpers ──────────────────────────────────────────────────────────
+
+async function sbUpsertHistory(entries) {
+  if (!entries.length) return;
+  const rows = entries.map((e) => ({
+    id: e.id, user_id: SB_USER, date: e.date,
+    rows: e.rows, price_total: e.priceTotal, fx_pct: e.fxPct,
+    fx_gain: e.fxGain, total: e.total,
+  }));
+  await sbRequest("POST", "history", rows, "?on_conflict=id");
+}
+
+async function sbUpsertTransactions(txs) {
+  if (!txs.length) return;
+  const rows = txs.map((t) => ({
+    id: t.id, user_id: SB_USER, ticker: t.ticker, date: t.date,
+    type: t.type, qty: t.qty, price: t.price, fx: t.fx ?? null, source: t.source ?? null,
+  }));
+  await sbRequest("POST", "transactions", rows, "?on_conflict=id");
+}
+
+async function sbUpsertPortfolio(portfolio) {
+  if (!portfolio.length) return;
+  const rows = portfolio.map((p, i) => ({
+    id: p.id, user_id: SB_USER, ticker: p.ticker, broker: p.broker ?? "",
+    quantity: p.quantity, avg_cost: p.avgCost ?? null, avg_cost_brl: p.avgCostBrl ?? null,
+    saldo: p.saldo, sort_order: i,
+  }));
+  await sbRequest("POST", "portfolio", rows, "?on_conflict=id");
+  // Eliminar posiciones que ya no existen localmente
+  const ids = portfolio.map((p) => p.id);
+  const existing = await sbRequest("GET", "portfolio", null, `?user_id=eq.${SB_USER}&select=id`);
+  if (existing) {
+    const toDelete = existing.filter((r) => !ids.includes(r.id)).map((r) => r.id);
+    if (toDelete.length) await sbRequest("DELETE", "portfolio", null, `?id=in.(${toDelete.join(",")})`);
+  }
+}
+
+async function sbUpsertSplits(splits) {
+  if (!splits.length) return;
+  const rows = splits.map((s) => ({
+    id: s.id, user_id: SB_USER, ticker: s.ticker, date: s.date, ratio: s.ratio,
+  }));
+  await sbRequest("POST", "splits", rows, "?on_conflict=id");
+}
+
+// ── PULL — descarga datos de la nube al abrir la app ────────────────────────
+
+async function syncPullFromCloud() {
+  // Descarga en paralelo todas las tablas del usuario y las fusiona con localStorage.
+  // Regla de fusión: la nube gana solo si el campo "id" no existe localmente todavía
+  // (los datos locales nunca se pisan), excepto en portfolio donde la nube es fuente
+  // de verdad (orden de filas, saldo guardado).
+  try {
+    const [cloudHistory, cloudTxs, cloudPortfolio, cloudSplits] = await Promise.all([
+      sbRequest("GET", "history", null, `?user_id=eq.${SB_USER}&select=*&order=date.asc`),
+      sbRequest("GET", "transactions", null, `?user_id=eq.${SB_USER}&select=*&order=date.asc`),
+      sbRequest("GET", "portfolio", null, `?user_id=eq.${SB_USER}&select=*&order=sort_order.asc`),
+      sbRequest("GET", "splits", null, `?user_id=eq.${SB_USER}&select=*`),
+    ]);
+
+    let changed = false;
+
+    // Historial
+    if (cloudHistory?.length) {
+      const localIds = new Set(state.history.map((e) => e.id));
+      const newEntries = cloudHistory
+        .filter((r) => !localIds.has(r.id))
+        .map((r) => ({ id: r.id, date: r.date, rows: r.rows, priceTotal: r.price_total, fxPct: r.fx_pct, fxGain: r.fx_gain, total: r.total }));
+      if (newEntries.length) { state.history = [...state.history, ...newEntries].sort((a, b) => new Date(a.date) - new Date(b.date)); changed = true; }
+    }
+
+    // Transacciones
+    if (cloudTxs?.length) {
+      const localIds = new Set(state.transactions.map((t) => t.id));
+      const newTxs = cloudTxs
+        .filter((r) => !localIds.has(r.id))
+        .map((r) => ({ id: r.id, ticker: r.ticker, date: r.date, type: r.type, qty: Number(r.qty), price: Number(r.price), fx: r.fx ? Number(r.fx) : null, source: r.source }));
+      if (newTxs.length) { state.transactions = [...state.transactions, ...newTxs]; changed = true; }
+    }
+
+    // Portfolio — si la nube tiene más filas o difiere, se usa la nube
+    if (cloudPortfolio?.length) {
+      const cloudMapped = cloudPortfolio.map((r) => ({ id: r.id, ticker: r.ticker, broker: r.broker, quantity: Number(r.quantity), avgCost: r.avg_cost ? Number(r.avg_cost) : null, avgCostBrl: r.avg_cost_brl ? Number(r.avg_cost_brl) : null, saldo: Number(r.saldo), price: "" }));
+      const localIds = new Set(state.portfolio.map((p) => p.id));
+      const cloudIds = new Set(cloudPortfolio.map((r) => r.id));
+      // Si hay IDs en la nube que no están local, la nube tiene datos más recientes de otro dispositivo
+      const cloudHasNew = cloudPortfolio.some((r) => !localIds.has(r.id));
+      const localHasExtra = state.portfolio.some((p) => !cloudIds.has(p.id));
+      if (cloudHasNew && !localHasExtra) { state.portfolio = cloudMapped; changed = true; }
+      else if (cloudHasNew) {
+        // Fusión: priorizar local para filas en conflicto, agregar las nuevas de la nube
+        const merged = [...state.portfolio];
+        cloudMapped.forEach((cp) => { if (!localIds.has(cp.id)) merged.push(cp); });
+        state.portfolio = merged; changed = true;
+      }
+    }
+
+    // Splits
+    if (cloudSplits?.length) {
+      const localIds = new Set((state.splits || []).map((s) => s.id));
+      const newSplits = cloudSplits.filter((r) => !localIds.has(r.id))
+        .map((r) => ({ id: r.id, ticker: r.ticker, date: r.date, ratio: Number(r.ratio) }));
+      if (newSplits.length) { state.splits = [...(state.splits || []), ...newSplits]; changed = true; }
+    }
+
+    if (changed) {
+      // Persistir localmente lo que vino de la nube
+      persistHistory();
+      persistTransactions();
+      persistPortfolio();
+      persistSplits();
+      // Re-inicializar y renderizar con los datos actualizados
+      resetHojeState();
+      resetPosicoesState();
+      resetHistoricoState();
+      render();
+      console.log("[supabase] Sincronización completada — datos actualizados desde la nube");
+    }
+  } catch (e) {
+    console.warn("[supabase] Error al sincronizar desde la nube:", e);
+  }
+}
+
+// ── Web Push — registro y envío de notificaciones ───────────────────────────
+
+const VAPID_PUBLIC_KEY = "BJ0ABOIgn6bCsqbafISxwVjqaVxSoKHcU28zFlsU5IYgJehTd6ED9d9Ls4n6SyTk7gk2oaox25aCjaFVzsB5jO4";
+
+function urlB64ToUint8Array(base64String) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = atob(base64);
+  return Uint8Array.from([...rawData].map((c) => c.charCodeAt(0)));
+}
+
+async function registerPushSubscription() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlB64ToUint8Array(VAPID_PUBLIC_KEY),
+      });
+    }
+    const j = sub.toJSON();
+    await sbRequest("POST", "push_subscriptions", [{
+      user_id: SB_USER,
+      endpoint: j.endpoint,
+      p256dh: j.keys.p256dh,
+      auth: j.keys.auth,
+    }], "?on_conflict=endpoint");
+    console.log("[push] Suscripción registrada en Supabase");
+  } catch (e) {
+    console.warn("[push] No se pudo registrar:", e);
+  }
+}
+
+async function sendPushNotification(title, body, tag = "pnl") {
+  try {
+    await fetch(`${SUPABASE_URL}/functions/v1/send-push`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SUPABASE_ANON_KEY}` },
+      body: JSON.stringify({ title, body, tag, user_id: SB_USER }),
+    });
+  } catch (e) {
+    console.warn("[push] Error al enviar notificación:", e);
+  }
+}
+
+async function requestPushPermission() {
+  if (!("Notification" in window)) return "unsupported";
+  if (Notification.permission === "granted") { await registerPushSubscription(); return "granted"; }
+  if (Notification.permission === "denied") return "denied";
+  const result = await Notification.requestPermission();
+  if (result === "granted") await registerPushSubscription();
+  return result;
+}
+
+// Sube TODO el estado local a la nube (úsalo la primera vez para "sembrar" Supabase)
+async function syncPushAllToCloud() {
+  await Promise.all([
+    sbUpsertHistory(state.history),
+    sbUpsertTransactions(state.transactions),
+    sbUpsertPortfolio(state.portfolio),
+    sbUpsertSplits(state.splits || []),
+  ]);
+  console.log("[supabase] Push completo — todos los datos locales subidos a la nube");
+}
+
+
 
 loadState();
 resetHojeState();
@@ -3762,6 +4027,23 @@ render();
 startAutoSaveWatcher();
 autoFillHistoryGaps();
 startAutoRefresh();
+
+// Al abrir: primero subir datos locales a la nube (por si este dispositivo tenía
+// datos que la nube no tiene todavía), luego bajar lo nuevo de la nube (por si
+// otro dispositivo agregó algo mientras esta tab estaba cerrada). Todo en
+// segundo plano — si falla la conexión, la app sigue funcionando normalmente.
+syncPushAllToCloud().then(() => syncPullFromCloud());
+
+// Registrar Service Worker (necesario para notificaciones push y modo offline)
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("./sw.js").then((reg) => {
+    console.log("[sw] Registrado:", reg.scope);
+    // Si ya tenía permiso de notificaciones, renovar la suscripción silenciosamente
+    if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+      registerPushSubscription();
+    }
+  }).catch((e) => console.warn("[sw] Error al registrar:", e));
+}
 
 </script>
 </body>
