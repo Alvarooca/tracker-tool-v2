@@ -4046,7 +4046,12 @@ async function syncPushAllToCloud() {
   await Promise.all([
     sbUpsertHistory(state.history),
     sbUpsertTransactions(state.transactions),
-    sbUpsertPortfolio(state.portfolio),
+    // Usamos state.posicoes.rows (estado en vivo) en lugar de state.portfolio (última versión
+    // guardada con "Guardar posiciones"), porque state.posicoes.rows refleja las cantidades y
+    // costos más recientes aunque el usuario no haya tocado "Guardar" — por ejemplo, después
+    // de importar un CSV las cantidades se actualizan en rows pero no en portfolio hasta que
+    // se guarda explícitamente.
+    sbUpsertPortfolio(state.posicoes?.rows?.length ? state.posicoes.rows : state.portfolio),
     sbUpsertSplits(state.splits || []),
     settings.length ? sbRequest("POST", "settings", settings, "?on_conflict=user_id,key") : Promise.resolve(),
   ]);
