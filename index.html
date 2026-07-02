@@ -2045,11 +2045,11 @@ function renderPosicoes() {
         </div>
         <p class="quotes-updated small muted">${p.quotesUpdatedAt ? timeAgoLabel(p.quotesUpdatedAt) : "aún no buscado"}</p>
         <div class="api-key-row">
-          <input class="input-cell input-apikey" data-bind="finnhubKey" value="${escapeAttr(p.finnhubKey)}" placeholder="Clave de API de Finnhub (precios)">
+          <input class="input-cell input-apikey" type="password" autocomplete="off" data-bind="finnhubKey" value="${escapeAttr(p.finnhubKey)}" placeholder="Clave de API de Finnhub (precios)">
           <a class="muted small" href="https://finnhub.io/register" target="_blank" rel="noopener">Crear clave gratis ↗</a>
         </div>
         <div class="api-key-row">
-          <input class="input-cell input-apikey" data-bind="apiKey" value="${escapeAttr(p.apiKey)}" placeholder="Clave de API de Twelve Data (cambio)">
+          <input class="input-cell input-apikey" type="password" autocomplete="off" data-bind="apiKey" value="${escapeAttr(p.apiKey)}" placeholder="Clave de API de Twelve Data (cambio)">
           <a class="muted small" href="https://twelvedata.com/pricing" target="_blank" rel="noopener">Crear clave gratis ↗</a>
         </div>
         <p class="upload-hint">El precio (US$) de cada posición se completa automáticamente al actualizar las cotizaciones, pero puedes escribir encima si quieres. Sin precio y cambio, el valor vuelve a ser editable manualmente.</p>
@@ -4133,11 +4133,18 @@ startAutoSaveWatcher();
 autoFillHistoryGaps();
 startAutoRefresh();
 
-// Al abrir: primero subir datos locales a la nube (por si este dispositivo tenía
-// datos que la nube no tiene todavía), luego bajar lo nuevo de la nube (por si
-// otro dispositivo agregó algo mientras esta tab estaba cerrada). Todo en
-// segundo plano — si falla la conexión, la app sigue funcionando normalmente.
-syncPushAllToCloud().then(() => syncPullFromCloud());
+// Al abrir: detectamos si este dispositivo tiene datos locales.
+// - Si SÍ tiene datos: primero subimos (por si tiene algo nuevo que la nube no tiene),
+//   después bajamos (por si otros dispositivos agregaron algo).
+// - Si NO tiene datos (dispositivo nuevo o cookies borradas): primero bajamos de la nube,
+//   después subimos lo que bajamos (para que quede consistente). Nunca subir vacío primero
+//   porque pisaría los datos correctos que están en la nube.
+const hasLocalData = state.portfolio.length > 0 || state.history.length > 0;
+if (hasLocalData) {
+  syncPushAllToCloud().then(() => syncPullFromCloud());
+} else {
+  syncPullFromCloud().then(() => syncPushAllToCloud());
+}
 
 // Registrar Service Worker (necesario para notificaciones push y modo offline)
 if ("serviceWorker" in navigator) {
