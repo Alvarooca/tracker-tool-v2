@@ -3251,21 +3251,51 @@ function importPurchasesFile(file) {
       // El precio promedio se recalcula a partir de TODO el historial de transacciones ya
       // persistido (no solo de las filas de este archivo), para que sea correcto incluso si
       // el CSV importado es parcial o se reimporta más de una vez.
+      // También se recalcula la CANTIDAD de cada activo (suma de compras menos ventas),
+      // así la tabla de posiciones siempre es consistente con el historial de transacciones
+      // sin que el usuario tenga que ingresar cantidades manualmente.
       const tickersInFile = new Set();
       txs.forEach((cols) => {
         const rawSym = (cols[idx.symbol] || "").trim();
         const sym = rawSym.includes(":") ? rawSym.split(":").pop() : rawSym;
         if (sym) tickersInFile.add(sym);
       });
-      state.splits.forEach((s) => tickersInFile.add(s.ticker)); // por si la limpieza afectó un ticker que no estaba en este archivo
+      state.splits.forEach((s) => tickersInFile.add(s.ticker));
 
       let matched = 0;
       tickersInFile.forEach((sym) => {
         const { avgCostUsd, avgCostBrl } = recomputeCostBasisFromTransactions(sym);
-        if (avgCostUsd === null) return;
+
+        // Calcular cantidad neta desde transacciones (compras - ventas, ignorando dividendos)
+        const netQty = state.transactions
+          .filter((t) => t.ticker === sym && (t.type === "buy" || t.type === "sell"))
+          .reduce((acc, t) => acc + (t.type === "buy" ? t.qty : -t.qty), 0);
+
+        if (avgCostUsd === null && netQty <= 0.0001) return; // ticker sin posición activa
+
         matched++;
         applyAvgCostToTickerRows(sym, avgCostUsd, avgCostBrl);
+
+        // Actualizar la cantidad en la fila dominante (la de mayor cantidad, igual que avgCost)
+        if (netQty > 0.0001) {
+          const rowsForTicker = (state.posicoes?.rows || []).filter((r) => r.ticker === sym);
+          const targetRow = rowsForTicker.length <= 1
+            ? rowsForTicker[0]
+            : rowsForTicker.reduce((a, b) => (parseNum(b.quantity) > parseNum(a.quantity) ? b : a));
+          if (targetRow) {
+            const roundedQty = Math.round(netQty * 100000) / 100000; // 5 decimales
+            if (state.posicoes) {
+              state.posicoes.rows = state.posicoes.rows.map((r) =>
+                r.id === targetRow.id ? { ...r, quantity: roundedQty } : r
+              );
+            }
+            state.portfolio = state.portfolio.map((r) =>
+              r.id === targetRow.id ? { ...r, quantity: roundedQty } : r
+            );
+          }
+        }
       });
+      if (state.posicoes) state.posicoes.dirty = true;
       persistPortfolio();
       resetPosicoesState();
       state.posicoes.quotesError = matched || dividendsImported
