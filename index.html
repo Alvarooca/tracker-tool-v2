@@ -3223,7 +3223,50 @@ function importPurchasesFile(file) {
         // cantidad/precio originales, sin ajustar) se ajusta a la MISMA escala que ya tienen
         // las transacciones guardadas — así una reimportación no agrega una versión duplicada
         // y desajustada de una compra que ya estaba correctamente ajustada por el split.
-        const { qty: adjQty, price: adjPrice } = applySplitsToRawValue(sym, date, parseQty(cols[idx.qty]), parseNum(cols[idx.price]));
+        // Aplicar splits a las transacciones antiguas para que queden en la misma escala
+        // que las acciones actuales. PERO: algunos exports (como Kinvo) ya vienen con
+        // cantidades post-split — en ese caso aplicar el split de nuevo las duplicaría.
+        // Detectamos esto comparando la cantidad neta del CSV (sin ajustar) contra la cantidad
+        // neta que resultaría de aplicar el split. Si el CSV ya tiene la cantidad correcta
+        // (post-split), NO aplicamos el ajuste.
+        const rawNetQty = txs
+          .filter(cols => {
+            const rawSym = (cols[idx.symbol] || '').trim();
+            const sym2 = rawSym.includes(':') ? rawSym.split(':').pop() : rawSym;
+            const type = (cols[idx.type] || '').trim().toLowerCase();
+            return sym2 === sym && (type === 'buy' || type === 'sell');
+          })
+          .reduce((acc, cols) => {
+            const type = (cols[idx.type] || '').trim().toLowerCase();
+            return acc + (type === 'buy' ? parseQty(cols[idx.qty]) : -parseQty(cols[idx.qty]));
+          }, 0);
+
+        const adjustedNetQty = txs
+          .filter(cols => {
+            const rawSym = (cols[idx.symbol] || '').trim();
+            const sym2 = rawSym.includes(':') ? rawSym.split(':').pop() : rawSym;
+            const type = (cols[idx.type] || '').trim().toLowerCase();
+            return sym2 === sym && (type === 'buy' || type === 'sell');
+          })
+          .reduce((acc, cols) => {
+            const rawSym = (cols[idx.symbol] || '').trim();
+            const sym2 = rawSym.includes(':') ? rawSym.split(':').pop() : rawSym;
+            const dateRaw = cols[idx.date] || '';
+            const date = dateRaw ? new Date(dateRaw).toISOString() : new Date().toISOString();
+            const type = (cols[idx.type] || '').trim().toLowerCase();
+            const { qty: adjQ } = applySplitsToRawValue(sym2, date, parseQty(cols[idx.qty]), parseNum(cols[idx.price]));
+            return acc + (type === 'buy' ? adjQ : -adjQ);
+          }, 0);
+
+        // Si la cantidad neta ya ajustada es significativamente mayor que la cruda (más del 10%),
+        // el CSV viene con cantidades pre-split y hay que ajustar. Si son similares, ya viene post-split.
+        const csvAlreadyAdjusted = Math.abs(adjustedNetQty - rawNetQty) / (rawNetQty || 1) > 0.1
+          ? false  // hay diferencia grande → CSV es pre-split, aplicar ajuste
+          : true;  // son similares → CSV ya es post-split, NO ajustar
+
+        const { qty: adjQty, price: adjPrice } = csvAlreadyAdjusted
+          ? { qty: parseQty(cols[idx.qty]), price: parseNum(cols[idx.price]) }
+          : applySplitsToRawValue(sym, date, parseQty(cols[idx.qty]), parseNum(cols[idx.price]));
         const rec = { ticker: sym, date, type, qty: adjQty, price: adjPrice, fx: fxFromFile };
         const key = txKey(rec);
         if (!existingKeys.has(key)) {
