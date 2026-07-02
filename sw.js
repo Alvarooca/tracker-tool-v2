@@ -1,32 +1,57 @@
 // Service Worker — P&L Diario
 // Maneja notificaciones Web Push y cacheo offline básico
 
-const CACHE_NAME = "pnl-v1";
+const CACHE_NAME = "pnl-v3"; // ← incrementar con cada deploy para forzar actualización
 
 // ── Instalación: cachear el archivo principal ────────────────────────────────
 self.addEventListener("install", (e) => {
   e.waitUntil(
     caches.open(CACHE_NAME).then((cache) => cache.addAll(["./index.html"]))
   );
-  self.skipWaiting();
+  self.skipWaiting(); // activar inmediatamente sin esperar que se cierren tabs viejas
 });
 
+// ── Activación: eliminar cachés viejos ───────────────────────────────────────
 self.addEventListener("activate", (e) => {
-  e.waitUntil(clients.claim());
+  e.waitUntil(
+    caches.keys().then((keys) =>
+      Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)))
+    ).then(() => clients.claim()) // tomar control de todas las tabs abiertas
+  );
 });
 
 // ── Fetch: red primero, fallback a caché ─────────────────────────────────────
+// Para index.html siempre va a la red primero — así el usuario siempre recibe
+// la versión más nueva del archivo aunque el SW esté activo.
 self.addEventListener("fetch", (e) => {
   if (e.request.method !== "GET") return;
-  e.respondWith(
-    fetch(e.request)
-      .then((resp) => {
-        const clone = resp.clone();
-        caches.open(CACHE_NAME).then((c) => c.put(e.request, clone));
-        return resp;
+  const url = new URL(e.request.url);
+  const isHtml = url.pathname.endsWith(".html") || url.pathname.endsWith("/");
+
+  if (isHtml) {
+    // HTML: red primero, actualizar caché, fallback a caché si offline
+    e.respondWith(
+      fetch(e.request)
+        .then((resp) => {
+          const clone = resp.clone();
+          caches.open(CACHE_NAME).then((c) => c.put(e.request, clone));
+          return resp;
+        })
+        .catch(() => caches.match(e.request))
+    );
+  } else {
+    // Otros assets: caché primero (fuentes, íconos, etc.)
+    e.respondWith(
+      caches.match(e.request).then((cached) => {
+        if (cached) return cached;
+        return fetch(e.request).then((resp) => {
+          const clone = resp.clone();
+          caches.open(CACHE_NAME).then((c) => c.put(e.request, clone));
+          return resp;
+        });
       })
-      .catch(() => caches.match(e.request))
-  );
+    );
+  }
 });
 
 // ── Push: recibir notificación del servidor ───────────────────────────────────
