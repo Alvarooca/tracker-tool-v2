@@ -518,8 +518,27 @@ function persistPortfolio(skipCloud = false) {
 }
 
 function persistHistory() {
-  try { localStorage.setItem("pnl-history", JSON.stringify(state.history)); } catch (_) {}
-  sbUpsertHistory(state.history); // fire-and-forget
+  // El historial completo (1279+ días × 8 activos) puede superar fácilmente los 5MB de
+  // localStorage, corrompiendo el estado de la app. Como el historial completo ya vive en
+  // Supabase, solo guardamos los últimos 90 días en localStorage — suficiente para los
+  // gráficos y el auto-save diario. El resto se baja de la nube cuando se necesita.
+  try {
+    const sorted = [...state.history].sort((a, b) => new Date(b.date) - new Date(a.date));
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - 90);
+    const recent = sorted.filter((e) => new Date(e.date) >= cutoff);
+    localStorage.setItem("pnl-history", JSON.stringify(recent));
+  } catch (_) {
+    // Si aún así falla (muy poco espacio), intentamos con solo los últimos 30 días
+    try {
+      const sorted = [...state.history].sort((a, b) => new Date(b.date) - new Date(a.date));
+      const cutoff = new Date();
+      cutoff.setDate(cutoff.getDate() - 30);
+      const recent = sorted.filter((e) => new Date(e.date) >= cutoff);
+      localStorage.setItem("pnl-history", JSON.stringify(recent));
+    } catch (_) {}
+  }
+  sbUpsertHistory(state.history); // fire-and-forget — el historial COMPLETO siempre va a la nube
 }
 
 // Recalcula el precio promedio de compra de un ticker a partir de TODAS sus transacciones
@@ -3916,7 +3935,12 @@ async function sbUpsertHistory(entries) {
     rows: e.rows, price_total: e.priceTotal, fx_pct: e.fxPct,
     fx_gain: e.fxGain, total: e.total,
   }));
-  await sbRequest("POST", "history", rows, "?on_conflict=id");
+  // Supabase tiene un límite de tamaño por request. Con 1279 días × 8 posiciones cada uno,
+  // el payload puede ser muy grande. Subimos en chunks de 100 días para evitar timeouts.
+  const CHUNK = 100;
+  for (let i = 0; i < rows.length; i += CHUNK) {
+    await sbRequest("POST", "history", rows.slice(i, i + CHUNK), "?on_conflict=id");
+  }
 }
 
 async function sbUpsertTransactions(txs) {
@@ -3994,11 +4018,18 @@ async function syncPullFromCloud() {
 
     // Historial — agregar entradas que faltan localmente
     if (cloudHistory?.length) {
-      const localIds = new Set(state.history.map((e) => e.id));
-      const newEntries = cloudHistory
-        .filter((r) => !localIds.has(r.id))
-        .map((r) => ({ id: r.id, date: r.date, rows: r.rows, priceTotal: r.price_total, fxPct: r.fx_pct, fxGain: r.fx_gain, total: r.total }));
-      if (newEntries.length) { state.history = [...state.history, ...newEntries].sort((a, b) => new Date(a.date) - new Date(b.date)); changed = true; }
+      // La nube tiene el historial COMPLETO. Local solo tiene los últimos 90 días (para no
+      // llenar el localStorage). Al hacer pull, siempre usamos la nube como fuente de verdad
+      // para el historial — reemplazamos state.history completo con lo de la nube.
+      const cloudMapped = cloudHistory.map((r) => ({
+        id: r.id, date: r.date, rows: r.rows,
+        priceTotal: r.price_total, fxPct: r.fx_pct, fxGain: r.fx_gain, total: r.total
+      }));
+      if (cloudMapped.length !== state.history.length ||
+          cloudMapped.some((c) => !state.history.find((h) => h.id === c.id))) {
+        state.history = cloudMapped;
+        changed = true;
+      }
     }
 
     // Transacciones — agregar las que faltan localmente
