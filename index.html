@@ -4242,7 +4242,9 @@ resetPosicoesState();
 resetHistoricoState();
 render();
 startAutoSaveWatcher();
-autoFillHistoryGaps();
+// autoFillHistoryGaps() deshabilitado: con Supabase el historial completo vive en la nube.
+// Correrlo automáticamente al abrir causaba corrupción de la app al intentar guardar
+// 1500+ entradas en localStorage. El historial se actualiza manualmente con "Importar histórico real".
 startAutoRefresh();
 
 // Al abrir: solo bajamos de la nube si hay datos más recientes.
