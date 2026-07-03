@@ -871,6 +871,7 @@ function resetPosicoesState() {
     missingDividends: [], // [{ ticker, date, perShare }] — pagos vistos en Finnhub que no están registrados
     dividendsExpanded: false,
     advancedExpanded: false,
+    advancedExpanded: false,
     txForm: { rowId: rows[0]?.id || "__new__", newTicker: "", newBroker: "", type: "buy", qty: "", price: "", date: todayYMD(), error: null, tickerSearchResults: [], tickerSearchStatus: "idle" },
     splitForm: { ...splitFormDefaults, error: null },
     splitMessage: null,
@@ -1991,97 +1992,48 @@ function renderBreakdown(rows) {
 
   // Agrupar por ticker
   const byTicker = {};
-  rows.forEach((r) => {
-    const t = r.ticker || "—";
-    byTicker[t] = (byTicker[t] || 0) + rowEffectiveValue(r);
-  });
-  const items = Object.entries(byTicker)
-    .sort((a, b) => b[1] - a[1])
-    .map(([ticker, value]) => ({ ticker, value, pct: (value / total) * 100 }));
+  rows.forEach((r) => { byTicker[r.ticker||"—"] = (byTicker[r.ticker||"—"]||0) + rowEffectiveValue(r); });
+  const items = Object.entries(byTicker).sort((a,b)=>b[1]-a[1]).map(([ticker,value])=>({ ticker, value, pct: (value/total)*100 }));
 
-  // Treemap con algoritmo squarified simplificado
-  const W = 320, H = 180;
-  function layoutRow(items, x, y, w, h) {
-    const rowTotal = items.reduce((s, i) => s + i.value, 0);
-    let cx = x;
-    return items.map((item) => {
-      const iw = (item.value / rowTotal) * w;
-      const rect = { ...item, x: cx, y, w: iw, h };
-      cx += iw;
-      return rect;
-    });
-  }
-  function squarify(items, x, y, w, h) {
-    if (!items.length) return [];
-    const total = items.reduce((s, i) => s + i.value, 0);
-    let best = [], rest = [...items], rects = [];
-    while (rest.length) {
-      const item = rest.shift();
-      const row = [...best, item];
-      const rowSum = row.reduce((s, i) => s + i.value, 0);
-      const isWide = w >= h;
-      const dim = isWide ? h : w;
-      const rowW = isWide ? (rowSum / total) * w : w;
-      const rowH = isWide ? h : (rowSum / total) * h;
-      const worst = (arr) => {
-        const s = arr.reduce((a, i) => a + i.value, 0);
-        const d = isWide ? h : w;
-        const rd = isWide ? (s / total) * w : (s / total) * h;
-        return Math.max(...arr.map(i => {
-          const side = (i.value / s) * d;
-          return Math.max(rd / side, side / rd);
-        }));
-      };
-      if (!best.length || worst(row) <= worst(best)) {
-        best = row;
-      } else {
-        const s = best.reduce((a, i) => a + i.value, 0);
-        if (isWide) {
-          const bw = (s / total) * w;
-          rects.push(...layoutRow(best, x, y, bw, h));
-          rects.push(...squarify(rest.concat([item]), x + bw, y, w - bw, h));
-        } else {
-          const bh = (s / total) * h;
-          rects.push(...layoutRow(best, x, y, w, bh).map(r => ({...r, x: r.y - y + x, y: r.x - x + y, w: r.h, h: r.w})));
-          rects.push(...squarify(rest.concat([item]), x, y + bh, w, h - bh));
-        }
-        return rects;
-      }
-    }
-    if (best.length) {
-      const s = best.reduce((a, i) => a + i.value, 0);
-      const isW = w >= h;
-      if (isW) {
-        const bw = (s / total) * w;
-        rects.push(...layoutRow(best, x, y, bw, h));
-      } else {
-        const bh = (s / total) * h;
-        rects.push(...layoutRow(best, x, y, w, bh).map(r => ({...r, x: r.y - y + x, y: r.x - x + y, w: r.h, h: r.w})));
-      }
-    }
-    return rects;
+  // Layout: dos filas. Fila 1 = activos grandes (>10%), Fila 2 = activos chicos (<10%)
+  // Dentro de cada fila, los rectángulos se distribuyen horizontalmente por peso.
+  const BIG = items.filter(i=>i.pct>=8);
+  const SMALL = items.filter(i=>i.pct<8);
+  const W = 100; // porcentaje
+  const H1 = SMALL.length ? 65 : 100; // altura fila 1 en %
+  const H2 = 100 - H1;
+  const GAP = 0.8;
+
+  function rowCells(arr, yPct, hPct) {
+    const rowTotal = arr.reduce((s,i)=>s+i.value,0);
+    let cx = 0;
+    return arr.map(item => {
+      const w = (item.value/rowTotal)*100;
+      const x = cx + GAP/2;
+      const cellW = w - GAP;
+      const y = yPct + GAP/2;
+      const cellH = hPct - GAP;
+      cx += w;
+      const color = avatarColor(item.ticker);
+      const midX = x + cellW/2;
+      const midY = y + cellH/2;
+      // Mostrar label si hay espacio suficiente (aprox >7% ancho y >20% alto)
+      const showLabel = cellW > 8 && cellH > 20;
+      const showPct = cellW > 10 && cellH > 30;
+      return `<g>
+        <rect x="${x.toFixed(2)}%" y="${y.toFixed(2)}%" width="${Math.max(0,cellW).toFixed(2)}%" height="${Math.max(0,cellH).toFixed(2)}%" rx="6" fill="${color}"/>
+        ${showLabel?`<text x="${midX.toFixed(2)}%" y="${(midY-(showPct?4:0)).toFixed(2)}%" text-anchor="middle" dominant-baseline="central" font-family="Inter,sans-serif" font-size="12" font-weight="700" fill="#fff" style="text-shadow:0 1px 3px rgba(0,0,0,.4)">${escapeHtml(item.ticker)}</text>`:""}
+        ${showPct?`<text x="${midX.toFixed(2)}%" y="${(midY+10).toFixed(2)}%" text-anchor="middle" dominant-baseline="central" font-family="Inter,sans-serif" font-size="10" fill="rgba(255,255,255,.75)">${item.pct.toFixed(1)}%</text>`:""}
+      </g>`;
+    }).join("");
   }
 
-  const rects = squarify(items.map(i => ({...i})), 0, 0, W, H);
-  const GAP = 2;
-  const cells = rects.map(r => {
-    const color = avatarColor(r.ticker);
-    const x = r.x + GAP/2, y = r.y + GAP/2, w = Math.max(0, r.w - GAP), h = Math.max(0, r.h - GAP);
-    const cx = x + w/2, cy = y + h/2;
-    const showLabel = w > 36 && h > 22;
-    const showPct = w > 50 && h > 36;
-    return `<g style="cursor:default" title="${escapeAttr(r.ticker)}: ${r.pct.toFixed(1)}%">
-      <rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" rx="4" fill="${color}" opacity="0.85"/>
-      ${showLabel ? `<text x="${cx.toFixed(1)}" y="${(cy - (showPct ? 7 : 0)).toFixed(1)}" text-anchor="middle" dominant-baseline="central" font-family="Inter,sans-serif" font-size="11" font-weight="600" fill="#fff">${escapeHtml(r.ticker)}</text>` : ""}
-      ${showPct ? `<text x="${cx.toFixed(1)}" y="${(cy + 9).toFixed(1)}" text-anchor="middle" dominant-baseline="central" font-family="Inter,sans-serif" font-size="10" fill="rgba(255,255,255,0.8)">${r.pct.toFixed(1)}%</text>` : ""}
-    </g>`;
-  }).join("");
+  const cells = rowCells(BIG, 0, H1) + (SMALL.length ? rowCells(SMALL, H1, H2) : "");
 
-  // Lista compacta debajo del treemap
-  const listRows = items.map(i => `<div class="breakdown-row">
+  // Lista compacta
+  const listRows = items.map(i=>`<div class="breakdown-row">
     <div class="breakdown-label" style="display:flex;align-items:center;gap:6px">
-      <span style="width:10px;height:10px;border-radius:2px;background:${avatarColor(i.ticker)};flex-shrink:0;display:inline-block"></span>
-      ${escapeHtml(i.ticker)}
+      <span style="width:9px;height:9px;border-radius:2px;background:${avatarColor(i.ticker)};flex-shrink:0;display:inline-block"></span>${escapeHtml(i.ticker)}
     </div>
     <div class="breakdown-bar-track"><div class="breakdown-bar-fill" style="width:${Math.max(i.pct,1).toFixed(1)}%;background:${avatarColor(i.ticker)}"></div></div>
     <div class="breakdown-pct">${i.pct.toFixed(1)}%</div>
@@ -2089,7 +2041,7 @@ function renderBreakdown(rows) {
 
   return `<div class="card">
     <h2 class="card-title">Distribución de la cartera</h2>
-    <svg viewBox="0 0 ${W} ${H}" width="100%" style="border-radius:8px;overflow:hidden;display:block;margin-bottom:12px">${cells}</svg>
+    <svg viewBox="0 0 100 100" preserveAspectRatio="none" width="100%" height="160" style="border-radius:10px;overflow:hidden;display:block;margin-bottom:14px">${cells}</svg>
     ${listRows}
   </div>`;
 }
