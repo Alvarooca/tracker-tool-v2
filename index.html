@@ -518,18 +518,20 @@ function persistPortfolio(skipCloud = false) {
 }
 
 function persistHistory() {
-  // El historial completo (1279+ días × 8 activos) puede superar fácilmente los 5MB de
-  // localStorage, corrompiendo el estado de la app. Como el historial completo ya vive en
-  // Supabase, solo guardamos los últimos 90 días en localStorage — suficiente para los
-  // gráficos y el auto-save diario. El resto se baja de la nube cuando se necesita.
   try {
     const sorted = [...state.history].sort((a, b) => new Date(b.date) - new Date(a.date));
+    // Deduplicar por día (YYYY-MM-DD) — quedarse con el más reciente de cada día
+    const byDate = {};
+    sorted.forEach((e) => {
+      const day = String(e.date).slice(0, 10);
+      if (!byDate[day]) byDate[day] = e;
+    });
+    const deduped = Object.values(byDate).sort((a, b) => new Date(b.date) - new Date(a.date));
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - 90);
-    const recent = sorted.filter((e) => new Date(e.date) >= cutoff);
+    const recent = deduped.filter((e) => new Date(e.date) >= cutoff);
     localStorage.setItem("pnl-history", JSON.stringify(recent));
   } catch (_) {
-    // Si aún así falla (muy poco espacio), intentamos con solo los últimos 30 días
     try {
       const sorted = [...state.history].sort((a, b) => new Date(b.date) - new Date(a.date));
       const cutoff = new Date();
@@ -538,7 +540,7 @@ function persistHistory() {
       localStorage.setItem("pnl-history", JSON.stringify(recent));
     } catch (_) {}
   }
-  sbUpsertHistory(state.history); // fire-and-forget — el historial COMPLETO siempre va a la nube
+  sbUpsertHistory(state.history);
 }
 
 // Recalcula el precio promedio de compra de un ticker a partir de TODAS sus transacciones
