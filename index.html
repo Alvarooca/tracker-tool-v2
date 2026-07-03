@@ -520,30 +520,20 @@ function persistPortfolio(skipCloud = false) {
 function persistHistory() {
   try {
     const sorted = [...state.history].sort((a, b) => new Date(b.date) - new Date(a.date));
-    // Deduplicar por día (YYYY-MM-DD) — entradas reales ganan sobre day-* del backfill
+    // Deduplicar por día (YYYY-MM-DD) — quedarse con el más reciente de cada día
     const byDate = {};
-    const isBackfill = (e) => String(e.id).startsWith("day-");
     sorted.forEach((e) => {
       const day = String(e.date).slice(0, 10);
-      const existing = byDate[day];
-      if (!existing) { byDate[day] = e; return; }
-      if (!isBackfill(existing) && isBackfill(e)) return; // real gana sobre backfill
-      if (isBackfill(existing) && !isBackfill(e)) { byDate[day] = e; return; }
-      // ambas del mismo tipo: ya está la más reciente (sorted desc)
+      if (!byDate[day]) byDate[day] = e;
     });
-    // No guardar entradas day-* en localStorage — no deben propagarse entre dispositivos
-    const deduped = Object.values(byDate)
-      .filter((e) => !isBackfill(e))
-      .sort((a, b) => new Date(b.date) - new Date(a.date));
+    const deduped = Object.values(byDate).sort((a, b) => new Date(b.date) - new Date(a.date));
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - 90);
     const recent = deduped.filter((e) => new Date(e.date) >= cutoff);
     localStorage.setItem("pnl-history", JSON.stringify(recent));
   } catch (_) {
     try {
-      const sorted = [...state.history]
-        .filter((e) => !String(e.id).startsWith("day-"))
-        .sort((a, b) => new Date(b.date) - new Date(a.date));
+      const sorted = [...state.history].sort((a, b) => new Date(b.date) - new Date(a.date));
       const cutoff = new Date();
       cutoff.setDate(cutoff.getDate() - 30);
       const recent = sorted.filter((e) => new Date(e.date) >= cutoff);
@@ -870,7 +860,6 @@ function resetPosicoesState() {
     dividendCheckError: null,
     missingDividends: [], // [{ ticker, date, perShare }] — pagos vistos en Finnhub que no están registrados
     dividendsExpanded: false,
-    advancedExpanded: false,
     txForm: { rowId: rows[0]?.id || "__new__", newTicker: "", newBroker: "", type: "buy", qty: "", price: "", date: todayYMD(), error: null, tickerSearchResults: [], tickerSearchStatus: "idle" },
     splitForm: { ...splitFormDefaults, error: null },
     splitMessage: null,
@@ -1989,59 +1978,35 @@ function renderBreakdown(rows) {
   const total = rows.reduce((s, r) => s + rowEffectiveValue(r), 0);
   if (!total) return "";
 
-  // Agrupar por ticker
+  const bar = (label, value, color) => {
+    const pct = total ? (value / total) * 100 : 0;
+    return `<div class="breakdown-row">
+      <div class="breakdown-label">${escapeHtml(label)}</div>
+      <div class="breakdown-bar-track"><div class="breakdown-bar-fill" style="width:${Math.max(pct, 1).toFixed(1)}%;background:${color}"></div></div>
+      <div class="breakdown-pct">${pct.toFixed(1)}%</div>
+    </div>`;
+  };
+
   const byTicker = {};
-  rows.forEach((r) => { byTicker[r.ticker||"—"] = (byTicker[r.ticker||"—"]||0) + rowEffectiveValue(r); });
-  const items = Object.entries(byTicker).sort((a,b)=>b[1]-a[1]).map(([ticker,value])=>({ ticker, value, pct: (value/total)*100 }));
+  rows.forEach((r) => { byTicker[r.ticker || "—"] = (byTicker[r.ticker || "—"] || 0) + rowEffectiveValue(r); });
+  const tickerRows = Object.entries(byTicker)
+    .sort((a, b) => b[1] - a[1])
+    .map(([t, v]) => bar(t, v, avatarColor(t)))
+    .join("");
 
-  // Layout: dos filas. Fila 1 = activos grandes (>10%), Fila 2 = activos chicos (<10%)
-  // Dentro de cada fila, los rectángulos se distribuyen horizontalmente por peso.
-  const BIG = items.filter(i=>i.pct>=8);
-  const SMALL = items.filter(i=>i.pct<8);
-  const W = 100; // porcentaje
-  const H1 = SMALL.length ? 65 : 100; // altura fila 1 en %
-  const H2 = 100 - H1;
-  const GAP = 0.8;
-
-  function rowCells(arr, yPct, hPct) {
-    const rowTotal = arr.reduce((s,i)=>s+i.value,0);
-    let cx = 0;
-    return arr.map(item => {
-      const w = (item.value/rowTotal)*100;
-      const x = cx + GAP/2;
-      const cellW = w - GAP;
-      const y = yPct + GAP/2;
-      const cellH = hPct - GAP;
-      cx += w;
-      const color = avatarColor(item.ticker);
-      const midX = x + cellW/2;
-      const midY = y + cellH/2;
-      // Mostrar label si hay espacio suficiente (aprox >7% ancho y >20% alto)
-      const showLabel = cellW > 8 && cellH > 20;
-      const showPct = cellW > 10 && cellH > 30;
-      return `<g>
-        <rect x="${x.toFixed(2)}%" y="${y.toFixed(2)}%" width="${Math.max(0,cellW).toFixed(2)}%" height="${Math.max(0,cellH).toFixed(2)}%" rx="6" fill="${color}"/>
-        ${showLabel?`<text x="${midX.toFixed(2)}%" y="${(midY-(showPct?4:0)).toFixed(2)}%" text-anchor="middle" dominant-baseline="central" font-family="Inter,sans-serif" font-size="12" font-weight="700" fill="#fff" style="text-shadow:0 1px 3px rgba(0,0,0,.4)">${escapeHtml(item.ticker)}</text>`:""}
-        ${showPct?`<text x="${midX.toFixed(2)}%" y="${(midY+10).toFixed(2)}%" text-anchor="middle" dominant-baseline="central" font-family="Inter,sans-serif" font-size="10" fill="rgba(255,255,255,.75)">${item.pct.toFixed(1)}%</text>`:""}
-      </g>`;
-    }).join("");
-  }
-
-  const cells = rowCells(BIG, 0, H1) + (SMALL.length ? rowCells(SMALL, H1, H2) : "");
-
-  // Lista compacta
-  const listRows = items.map(i=>`<div class="breakdown-row">
-    <div class="breakdown-label" style="display:flex;align-items:center;gap:6px">
-      <span style="width:9px;height:9px;border-radius:2px;background:${avatarColor(i.ticker)};flex-shrink:0;display:inline-block"></span>${escapeHtml(i.ticker)}
-    </div>
-    <div class="breakdown-bar-track"><div class="breakdown-bar-fill" style="width:${Math.max(i.pct,1).toFixed(1)}%;background:${avatarColor(i.ticker)}"></div></div>
-    <div class="breakdown-pct">${i.pct.toFixed(1)}%</div>
-  </div>`).join("");
+  const byBroker = {};
+  rows.forEach((r) => { byBroker[r.broker || "—"] = (byBroker[r.broker || "—"] || 0) + rowEffectiveValue(r); });
+  const brokerRows = Object.entries(byBroker)
+    .sort((a, b) => b[1] - a[1])
+    .map(([b, v]) => bar(b, v, avatarColor(b)))
+    .join("");
 
   return `<div class="card">
     <h2 class="card-title">Distribución de la cartera</h2>
-    <svg viewBox="0 0 100 100" preserveAspectRatio="none" width="100%" height="160" style="border-radius:10px;overflow:hidden;display:block;margin-bottom:14px">${cells}</svg>
-    ${listRows}
+    <p class="muted small breakdown-subtitle">Por activo</p>
+    ${tickerRows}
+    <p class="muted small breakdown-subtitle">Por corretora</p>
+    ${brokerRows}
   </div>`;
 }
 
@@ -2187,13 +2152,7 @@ function renderPosicoes() {
 
       ${renderDividendsCard()}
 
-      <div class="card" style="padding:0;overflow:hidden">
-        <button style="width:100%;background:none;border:none;color:var(--text-primary);font-family:inherit;font-size:14px;font-weight:600;padding:16px 20px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;text-align:left" data-action="toggle-advanced">
-          Herramientas avanzadas
-          <span style="color:var(--text-muted);font-size:12px;font-weight:400">${p.advancedExpanded ? "▲ Ocultar" : "▼ Mostrar"}</span>
-        </button>
-      </div>
-      ${p.advancedExpanded ? `<div class="card">
+      <div class="card">
         <h2 class="card-title">Desdoblamientos de acciones (splits)</h2>
         <p class="muted small">Cuando un activo hace un desdoblamiento (ej. ARKB hizo un 3-por-1 el 16/06/2025), el precio promedio de compra calculado con tus compras antiguas queda en una escala distinta a la de las acciones actuales, y la ganancia/pérdida no realizada se ve absurdamente alta o baja. Regístralo aquí para corregirlo: se ajustan las transacciones de ese activo anteriores a la fecha y se recalcula el precio promedio.</p>
         ${
@@ -2250,7 +2209,7 @@ function renderPosicoes() {
           </div>
           <input type="file" id="import-backup-input" accept="application/json" hidden>
         </div>
-      </div>` : ""}
+      </div>
     </div>`;
 }
 
@@ -3689,7 +3648,6 @@ function handleAction(action, el) {
     case "add-transaction": addTransaction(); break;
     case "check-missing-dividends": checkMissingDividends(); break;
     case "toggle-dividends-expanded": state.posicoes.dividendsExpanded = !state.posicoes.dividendsExpanded; render(); break;
-    case "toggle-advanced": state.posicoes.advancedExpanded = !state.posicoes.advancedExpanded; render(); break;
     case "quickadd-dividend": {
       const f = state.posicoes.txForm;
       const row = state.posicoes.rows.find((r) => r.ticker === el.dataset.ticker);
@@ -4045,11 +4003,7 @@ async function sbRequest(method, table, body = null, query = "") {
 
 async function sbUpsertHistory(entries) {
   if (!entries.length) return;
-  // Nunca subir entradas del backfill externo (day-*) — son solo para relleno histórico
-  // y no deben circular entre dispositivos ni pisar entradas reales en Supabase.
-  const filtered = entries.filter((e) => !String(e.id).startsWith("day-"));
-  if (!filtered.length) return;
-  const rows = filtered.map((e) => ({
+  const rows = entries.map((e) => ({
     id: e.id, user_id: SB_USER, date: e.date,
     rows: e.rows,
     price_total: e.priceTotal, fx_pct: e.fxPct,
@@ -4149,33 +4103,18 @@ async function syncPullFromCloud() {
         priceTotal: r.price_total, fxPct: r.fx_pct, fxGain: r.fx_gain, total: r.total,
         totalSaldo: Number(r.total_saldo) || 0,
       }));
-      // Fusionar local + nube deduplicando por fecha (YYYY-MM-DD).
-      // Prioridad: entradas reales (row-*, real-*) > entradas del backfill (day-*)
-      // Si el mismo día tiene una entrada real y una del backfill, gana la real siempre.
+      // Fusionar local + nube deduplicando por fecha (YYYY-MM-DD), más reciente gana
       const allEntries = [...state.history, ...cloudMapped];
       const byDate = {};
-      const isBackfillEntry = (e) => String(e.id).startsWith("day-");
       allEntries.forEach((e) => {
         const day = String(e.date).slice(0, 10);
-        const existing = byDate[day];
-        if (!existing) { byDate[day] = e; return; }
-        // Si la existente es real y la nueva es backfill → ignorar la nueva
-        if (!isBackfillEntry(existing) && isBackfillEntry(e)) return;
-        // Si la existente es backfill y la nueva es real → usar la nueva
-        if (isBackfillEntry(existing) && !isBackfillEntry(e)) { byDate[day] = e; return; }
-        // Ambas del mismo tipo → más reciente gana
-        if (String(e.date) > String(existing.date)) byDate[day] = e;
+        if (!byDate[day] || String(e.date) > String(byDate[day].date)) byDate[day] = e;
       });
       const merged = Object.values(byDate).sort((a, b) => new Date(a.date) - new Date(b.date));
       if (merged.length !== state.history.length || merged.some((m, i) => m.id !== state.history[i]?.id)) {
         state.history = merged;
         changed = true;
       }
-
-      // Deduplicar por día Brasil — si hay 2 entradas para el mismo día, borrar la más vieja
-      const byDayBr = {};
-      cloudHistory.forEach((r) => { const d = dateToBrazilYMD(r.date); (byDayBr[d] = byDayBr[d] || []).push(r); });
-      Object.values(byDayBr).forEach((g) => { if (g.length < 2) return; g.sort((a,b) => String(b.date).localeCompare(String(a.date))); g.slice(1).forEach((r) => sbRequest("DELETE","history",null,`?id=eq.${r.id}&user_id=eq.${SB_USER}`)); });
     }
 
     // Transacciones — agregar las que faltan localmente
@@ -4392,113 +4331,18 @@ startAutoRefresh();
 // toca explícitamente "Subir todo a la nube".
 syncPullFromCloud();
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  INSTRUCCIONES DE INTEGRACIÓN
-//  Buscar en index.html el bloque que dice:
-//
-//    // Eliminamos el Service Worker — causaba que versiones viejas…
-//    if ("serviceWorker" in navigator) {
-//      navigator.serviceWorker.getRegistrations().then(…)
-//    }
-//
-//  Reemplazarlo COMPLETAMENTE por este bloque:
-// ─────────────────────────────────────────────────────────────────────────────
-
-// ── Registro del Service Worker ──────────────────────────────────────────────
+// Eliminamos el Service Worker — causaba que versiones viejas de la app se sirvieran
+// desde caché incluso después de actualizar el archivo en GitHub, corrompiendo el estado
+// y dejando la app en pantalla negra. Las notificaciones push se pueden reimplementar
+// sin SW usando una solución alternativa en el futuro.
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("./sw.js", { scope: "./" })
-    .then((reg) => {
-      console.log("[sw] Registrado. Scope:", reg.scope);
-
-      // Detectar cuando hay un nuevo SW instalándose
-      reg.addEventListener("updatefound", () => {
-        const newSW = reg.installing;
-        if (!newSW) return;
-
-        newSW.addEventListener("statechange", () => {
-          // "installed" + controlador previo = nueva versión lista para activar
-          if (newSW.state === "installed" && navigator.serviceWorker.controller) {
-            showUpdateBanner();
-          }
-        });
-      });
-    })
-    .catch((err) => {
-      console.warn("[sw] Error al registrar:", err);
+  navigator.serviceWorker.getRegistrations().then((registrations) => {
+    registrations.forEach((reg) => {
+      reg.unregister();
+      console.log("[sw] Service Worker eliminado:", reg.scope);
     });
-
-  // Si el SW tomó el control después de una actualización (skipWaiting),
-  // recargar para que la página nueva se sirva en esta pestaña también.
-  let refreshing = false;
-  navigator.serviceWorker.addEventListener("controllerchange", () => {
-    if (refreshing) return;
-    refreshing = true;
-    // Solo recargamos si el usuario ya apretó "Actualizar" en el banner.
-    // Para no recargar involuntariamente al abrir la app por primera vez,
-    // chequeamos si el banner estaba visible.
-    if (document._swUpdateBannerShown) {
-      window.location.reload();
-    }
   });
 }
-
-// ── Banner "Nueva versión disponible" ────────────────────────────────────────
-// Aparece en la parte inferior de la pantalla cuando hay una actualización lista.
-// El usuario decide cuándo recargar — nunca se hace de forma automática.
-function showUpdateBanner() {
-  if (document.getElementById("sw-update-banner")) return; // no duplicar
-  document._swUpdateBannerShown = true;
-
-  const banner = document.createElement("div");
-  banner.id = "sw-update-banner";
-  banner.style.cssText = [
-    "position:fixed",
-    "bottom:20px",
-    "left:50%",
-    "transform:translateX(-50%)",
-    "background:var(--accent-gold)",
-    "color:var(--on-accent)",
-    "padding:11px 20px",
-    "border-radius:24px",
-    "font-family:'Inter',sans-serif",
-    "font-size:13px",
-    "font-weight:600",
-    "z-index:9999",
-    "display:flex",
-    "align-items:center",
-    "gap:12px",
-    "box-shadow:0 4px 20px rgba(0,0,0,0.4)",
-    "cursor:default",
-    "white-space:nowrap",
-  ].join(";");
-
-  banner.innerHTML = `
-    <span>↑ Nueva versión disponible</span>
-    <button
-      onclick="document._swUpdateBannerShown=true; navigator.serviceWorker.getRegistration().then(r=>r&&r.waiting&&r.waiting.postMessage({type:'SKIP_WAITING'})); this.closest('#sw-update-banner').remove();"
-      style="background:rgba(0,0,0,0.18);border:none;color:inherit;font:inherit;
-             padding:5px 14px;border-radius:14px;cursor:pointer;font-size:12px;font-weight:700">
-      Actualizar
-    </button>
-    <button
-      onclick="this.closest('#sw-update-banner').remove()"
-      aria-label="Cerrar"
-      style="background:none;border:none;color:inherit;font-size:16px;cursor:pointer;
-             padding:0 2px;line-height:1;opacity:.7">
-      ✕
-    </button>
-  `;
-
-  document.body.appendChild(banner);
-}
-
-// ── Recibir la señal SKIP_WAITING desde el banner ────────────────────────────
-// El SW escucha este mensaje para activarse de inmediato cuando el usuario
-// aprieta "Actualizar" (en vez de esperar a que cierre todas las pestañas).
-// Esto ya está manejado en sw.js con self.skipWaiting() en el install,
-// pero el postMessage es el canal para forzarlo desde la página si fuera necesario.
-// (La línea de abajo va en sw.js, ya incluida — se deja aquí solo como referencia)
-// self.addEventListener("message", (e) => { if (e.data?.type === "SKIP_WAITING") self.skipWaiting(); });
 
 </script>
 </body>
