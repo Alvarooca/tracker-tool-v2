@@ -4261,15 +4261,17 @@ startAutoRefresh();
 // toca explícitamente "Subir todo a la nube".
 syncPullFromCloud();
 
-// Registrar Service Worker (necesario para notificaciones push y modo offline)
+// Eliminamos el Service Worker — causaba que versiones viejas de la app se sirvieran
+// desde caché incluso después de actualizar el archivo en GitHub, corrompiendo el estado
+// y dejando la app en pantalla negra. Las notificaciones push se pueden reimplementar
+// sin SW usando una solución alternativa en el futuro.
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("./sw.js").then((reg) => {
-    console.log("[sw] Registrado:", reg.scope);
-    // Si ya tenía permiso de notificaciones, renovar la suscripción silenciosamente
-    if (typeof Notification !== "undefined" && Notification.permission === "granted") {
-      registerPushSubscription();
-    }
-  }).catch((e) => console.warn("[sw] Error al registrar:", e));
+  navigator.serviceWorker.getRegistrations().then((registrations) => {
+    registrations.forEach((reg) => {
+      reg.unregister();
+      console.log("[sw] Service Worker eliminado:", reg.scope);
+    });
+  });
 }
 
 </script>
