@@ -870,6 +870,7 @@ function resetPosicoesState() {
     dividendCheckError: null,
     missingDividends: [], // [{ ticker, date, perShare }] — pagos vistos en Finnhub que no están registrados
     dividendsExpanded: false,
+    advancedExpanded: false,
     txForm: { rowId: rows[0]?.id || "__new__", newTicker: "", newBroker: "", type: "buy", qty: "", price: "", date: todayYMD(), error: null, tickerSearchResults: [], tickerSearchStatus: "idle" },
     splitForm: { ...splitFormDefaults, error: null },
     splitMessage: null,
@@ -1988,35 +1989,108 @@ function renderBreakdown(rows) {
   const total = rows.reduce((s, r) => s + rowEffectiveValue(r), 0);
   if (!total) return "";
 
-  const bar = (label, value, color) => {
-    const pct = total ? (value / total) * 100 : 0;
-    return `<div class="breakdown-row">
-      <div class="breakdown-label">${escapeHtml(label)}</div>
-      <div class="breakdown-bar-track"><div class="breakdown-bar-fill" style="width:${Math.max(pct, 1).toFixed(1)}%;background:${color}"></div></div>
-      <div class="breakdown-pct">${pct.toFixed(1)}%</div>
-    </div>`;
-  };
-
+  // Agrupar por ticker
   const byTicker = {};
-  rows.forEach((r) => { byTicker[r.ticker || "—"] = (byTicker[r.ticker || "—"] || 0) + rowEffectiveValue(r); });
-  const tickerRows = Object.entries(byTicker)
+  rows.forEach((r) => {
+    const t = r.ticker || "—";
+    byTicker[t] = (byTicker[t] || 0) + rowEffectiveValue(r);
+  });
+  const items = Object.entries(byTicker)
     .sort((a, b) => b[1] - a[1])
-    .map(([t, v]) => bar(t, v, avatarColor(t)))
-    .join("");
+    .map(([ticker, value]) => ({ ticker, value, pct: (value / total) * 100 }));
 
-  const byBroker = {};
-  rows.forEach((r) => { byBroker[r.broker || "—"] = (byBroker[r.broker || "—"] || 0) + rowEffectiveValue(r); });
-  const brokerRows = Object.entries(byBroker)
-    .sort((a, b) => b[1] - a[1])
-    .map(([b, v]) => bar(b, v, avatarColor(b)))
-    .join("");
+  // Treemap con algoritmo squarified simplificado
+  const W = 320, H = 180;
+  function layoutRow(items, x, y, w, h) {
+    const rowTotal = items.reduce((s, i) => s + i.value, 0);
+    let cx = x;
+    return items.map((item) => {
+      const iw = (item.value / rowTotal) * w;
+      const rect = { ...item, x: cx, y, w: iw, h };
+      cx += iw;
+      return rect;
+    });
+  }
+  function squarify(items, x, y, w, h) {
+    if (!items.length) return [];
+    const total = items.reduce((s, i) => s + i.value, 0);
+    let best = [], rest = [...items], rects = [];
+    while (rest.length) {
+      const item = rest.shift();
+      const row = [...best, item];
+      const rowSum = row.reduce((s, i) => s + i.value, 0);
+      const isWide = w >= h;
+      const dim = isWide ? h : w;
+      const rowW = isWide ? (rowSum / total) * w : w;
+      const rowH = isWide ? h : (rowSum / total) * h;
+      const worst = (arr) => {
+        const s = arr.reduce((a, i) => a + i.value, 0);
+        const d = isWide ? h : w;
+        const rd = isWide ? (s / total) * w : (s / total) * h;
+        return Math.max(...arr.map(i => {
+          const side = (i.value / s) * d;
+          return Math.max(rd / side, side / rd);
+        }));
+      };
+      if (!best.length || worst(row) <= worst(best)) {
+        best = row;
+      } else {
+        const s = best.reduce((a, i) => a + i.value, 0);
+        if (isWide) {
+          const bw = (s / total) * w;
+          rects.push(...layoutRow(best, x, y, bw, h));
+          rects.push(...squarify(rest.concat([item]), x + bw, y, w - bw, h));
+        } else {
+          const bh = (s / total) * h;
+          rects.push(...layoutRow(best, x, y, w, bh).map(r => ({...r, x: r.y - y + x, y: r.x - x + y, w: r.h, h: r.w})));
+          rects.push(...squarify(rest.concat([item]), x, y + bh, w, h - bh));
+        }
+        return rects;
+      }
+    }
+    if (best.length) {
+      const s = best.reduce((a, i) => a + i.value, 0);
+      const isW = w >= h;
+      if (isW) {
+        const bw = (s / total) * w;
+        rects.push(...layoutRow(best, x, y, bw, h));
+      } else {
+        const bh = (s / total) * h;
+        rects.push(...layoutRow(best, x, y, w, bh).map(r => ({...r, x: r.y - y + x, y: r.x - x + y, w: r.h, h: r.w})));
+      }
+    }
+    return rects;
+  }
+
+  const rects = squarify(items.map(i => ({...i})), 0, 0, W, H);
+  const GAP = 2;
+  const cells = rects.map(r => {
+    const color = avatarColor(r.ticker);
+    const x = r.x + GAP/2, y = r.y + GAP/2, w = Math.max(0, r.w - GAP), h = Math.max(0, r.h - GAP);
+    const cx = x + w/2, cy = y + h/2;
+    const showLabel = w > 36 && h > 22;
+    const showPct = w > 50 && h > 36;
+    return `<g style="cursor:default" title="${escapeAttr(r.ticker)}: ${r.pct.toFixed(1)}%">
+      <rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${h.toFixed(1)}" rx="4" fill="${color}" opacity="0.85"/>
+      ${showLabel ? `<text x="${cx.toFixed(1)}" y="${(cy - (showPct ? 7 : 0)).toFixed(1)}" text-anchor="middle" dominant-baseline="central" font-family="Inter,sans-serif" font-size="11" font-weight="600" fill="#fff">${escapeHtml(r.ticker)}</text>` : ""}
+      ${showPct ? `<text x="${cx.toFixed(1)}" y="${(cy + 9).toFixed(1)}" text-anchor="middle" dominant-baseline="central" font-family="Inter,sans-serif" font-size="10" fill="rgba(255,255,255,0.8)">${r.pct.toFixed(1)}%</text>` : ""}
+    </g>`;
+  }).join("");
+
+  // Lista compacta debajo del treemap
+  const listRows = items.map(i => `<div class="breakdown-row">
+    <div class="breakdown-label" style="display:flex;align-items:center;gap:6px">
+      <span style="width:10px;height:10px;border-radius:2px;background:${avatarColor(i.ticker)};flex-shrink:0;display:inline-block"></span>
+      ${escapeHtml(i.ticker)}
+    </div>
+    <div class="breakdown-bar-track"><div class="breakdown-bar-fill" style="width:${Math.max(i.pct,1).toFixed(1)}%;background:${avatarColor(i.ticker)}"></div></div>
+    <div class="breakdown-pct">${i.pct.toFixed(1)}%</div>
+  </div>`).join("");
 
   return `<div class="card">
     <h2 class="card-title">Distribución de la cartera</h2>
-    <p class="muted small breakdown-subtitle">Por activo</p>
-    ${tickerRows}
-    <p class="muted small breakdown-subtitle">Por corretora</p>
-    ${brokerRows}
+    <svg viewBox="0 0 ${W} ${H}" width="100%" style="border-radius:8px;overflow:hidden;display:block;margin-bottom:12px">${cells}</svg>
+    ${listRows}
   </div>`;
 }
 
@@ -2162,7 +2236,13 @@ function renderPosicoes() {
 
       ${renderDividendsCard()}
 
-      <div class="card">
+      <div class="card" style="padding:0;overflow:hidden">
+        <button style="width:100%;background:none;border:none;color:var(--text-primary);font-family:inherit;font-size:14px;font-weight:600;padding:16px 20px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;text-align:left" data-action="toggle-advanced">
+          Herramientas avanzadas
+          <span style="color:var(--text-muted);font-size:12px;font-weight:400">${p.advancedExpanded ? "▲ Ocultar" : "▼ Mostrar"}</span>
+        </button>
+      </div>
+      ${p.advancedExpanded ? `<div class="card">
         <h2 class="card-title">Desdoblamientos de acciones (splits)</h2>
         <p class="muted small">Cuando un activo hace un desdoblamiento (ej. ARKB hizo un 3-por-1 el 16/06/2025), el precio promedio de compra calculado con tus compras antiguas queda en una escala distinta a la de las acciones actuales, y la ganancia/pérdida no realizada se ve absurdamente alta o baja. Regístralo aquí para corregirlo: se ajustan las transacciones de ese activo anteriores a la fecha y se recalcula el precio promedio.</p>
         ${
@@ -2219,7 +2299,7 @@ function renderPosicoes() {
           </div>
           <input type="file" id="import-backup-input" accept="application/json" hidden>
         </div>
-      </div>
+      </div>` : ""}
     </div>`;
 }
 
@@ -3658,6 +3738,7 @@ function handleAction(action, el) {
     case "add-transaction": addTransaction(); break;
     case "check-missing-dividends": checkMissingDividends(); break;
     case "toggle-dividends-expanded": state.posicoes.dividendsExpanded = !state.posicoes.dividendsExpanded; render(); break;
+    case "toggle-advanced": state.posicoes.advancedExpanded = !state.posicoes.advancedExpanded; render(); break;
     case "quickadd-dividend": {
       const f = state.posicoes.txForm;
       const row = state.posicoes.rows.find((r) => r.ticker === el.dataset.ticker);
