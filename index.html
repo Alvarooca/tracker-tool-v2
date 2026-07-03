@@ -4140,29 +4140,10 @@ async function syncPullFromCloud() {
         changed = true;
       }
 
-      // Detectar entradas duplicadas por día en Brasil y borrarlas de Supabase automáticamente.
-      // Esto resuelve el caso donde dos dispositivos guardaron entradas distintas para el mismo
-      // día calendario de Brasil (una a las 20:xx y otra pasada la medianoche UTC).
-      // Se queda con la más reciente y borra la más vieja directamente en Supabase.
-      const byDayBrazil = {};
-      cloudHistory.forEach((r) => {
-        const dayBr = dateToBrazilYMD(r.date);
-        if (!byDayBrazil[dayBr]) { byDayBrazil[dayBr] = []; }
-        byDayBrazil[dayBr].push(r);
-      });
-      const toDeleteFromCloud = [];
-      Object.values(byDayBrazil).forEach((group) => {
-        if (group.length < 2) return;
-        // Ordenar más reciente primero — quedarse con la primera, borrar las demás
-        group.sort((a, b) => String(b.date).localeCompare(String(a.date)));
-        group.slice(1).forEach((r) => toDeleteFromCloud.push(r.id));
-      });
-      if (toDeleteFromCloud.length) {
-        console.log(`[supabase] Eliminando ${toDeleteFromCloud.length} entradas duplicadas del historial:`, toDeleteFromCloud);
-        for (const id of toDeleteFromCloud) {
-          sbRequest("DELETE", "history", null, `?id=eq.${id}&user_id=eq.${SB_USER}`);
-        }
-      }
+      // Deduplicar por día Brasil — si hay 2 entradas para el mismo día, borrar la más vieja
+      const byDayBr = {};
+      cloudHistory.forEach((r) => { const d = dateToBrazilYMD(r.date); (byDayBr[d] = byDayBr[d] || []).push(r); });
+      Object.values(byDayBr).forEach((g) => { if (g.length < 2) return; g.sort((a,b) => String(b.date).localeCompare(String(a.date))); g.slice(1).forEach((r) => sbRequest("DELETE","history",null,`?id=eq.${r.id}&user_id=eq.${SB_USER}`)); });
     }
 
     // Transacciones — agregar las que faltan localmente
