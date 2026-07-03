@@ -1694,6 +1694,7 @@ function saveHistoryAction() {
     fxGain: h.result.fxGain,
     priceTotal: h.result.priceTotal,
     total: h.result.total,
+    totalSaldo: h.result.rows.reduce((s, r) => s + (parseNum(r.saldo) || 0), 0),
   };
 
   // Si ya existe un registro de hoy (hora de Brasil) — por ejemplo el guardado automático
@@ -2397,7 +2398,12 @@ function renderHistorico() {
     const divForThisEntry = divCarryBrl;
     divCarryBrl = 0;
     const totalWithDiv = h.total + divForThisEntry;
-    const base = h.rows.reduce((s, r) => s + (r.saldo || 0), 0);
+    // Usar totalSaldo pre-calculado si está disponible (cuando rows está vacío por carga lite).
+    // totalSaldo = valor total de la cartera al INICIO del día (antes de la variación del día),
+    // que es el denominador correcto para el TWR.
+    const base = h.totalSaldo > 0
+      ? h.totalSaldo
+      : h.rows?.reduce((s, r) => s + (r.saldo || 0), 0) || 0;
     const ret = base > 0 ? totalWithDiv / base : 0;
     return { totalWithDiv, ret };
   };
@@ -2864,7 +2870,7 @@ async function importRealHistory() {
       const priceTotal = rows.reduce((s, r) => s + r.gain, 0);
       const fxPct = fxChangePct[d] ?? 0;
       const fxGain = ((hadAnyReconstruction ? totalSaldoForDate : totalSaldo) * fxPct) / 100;
-      return { id: `real-${d}`, date: `${d}T12:00:00`, rows, fxPct, fxGain, priceTotal, total: priceTotal + fxGain };
+      return { id: `real-${d}`, date: `${d}T12:00:00`, rows, fxPct, fxGain, priceTotal, total: priceTotal + fxGain, totalSaldo: totalSaldoForDate };
     });
 
   state.history = [...state.history, ...newEntries].sort((a, b) => new Date(a.date) - new Date(b.date));
@@ -3483,25 +3489,24 @@ async function loadFullHistoryFromCloud() {
     state.historico.importProgressLabel = "Cargando historial…";
     render();
 
-    // Cargar sin el campo `rows` (demasiado pesado para todos los días)
+    // Cargar sin el campo `rows` pero CON `total_saldo` (necesario para el TWR)
     // Los bloques de 500 evitan el límite de 1000 filas de Supabase
     const [block1, block2, block3] = await Promise.all([
-      sbRequest("GET", "history", null, `?user_id=eq.${SB_USER}&select=id,date,price_total,fx_pct,fx_gain,total&order=date.asc&offset=0&limit=500`),
-      sbRequest("GET", "history", null, `?user_id=eq.${SB_USER}&select=id,date,price_total,fx_pct,fx_gain,total&order=date.asc&offset=500&limit=500`),
-      sbRequest("GET", "history", null, `?user_id=eq.${SB_USER}&select=id,date,price_total,fx_pct,fx_gain,total&order=date.asc&offset=1000&limit=500`),
+      sbRequest("GET", "history", null, `?user_id=eq.${SB_USER}&select=id,date,price_total,fx_pct,fx_gain,total,total_saldo&order=date.asc&offset=0&limit=500`),
+      sbRequest("GET", "history", null, `?user_id=eq.${SB_USER}&select=id,date,price_total,fx_pct,fx_gain,total,total_saldo&order=date.asc&offset=500&limit=500`),
+      sbRequest("GET", "history", null, `?user_id=eq.${SB_USER}&select=id,date,price_total,fx_pct,fx_gain,total,total_saldo&order=date.asc&offset=1000&limit=500`),
     ]);
 
     const all = [...(block1 || []), ...(block2 || []), ...(block3 || [])];
     if (!all.length) { state.historico.importStatus = "idle"; state.historico.importProgressLabel = null; render(); return; }
 
-    // Fusionar con state.history existente: las entradas recientes (últimos 90 días) ya
-    // tienen el campo `rows` completo — las mantenemos. Las antiguas solo tienen totales.
     const localById = Object.fromEntries(state.history.map((h) => [h.id, h]));
     state.history = all.map((r) => ({
-      ...(localById[r.id] || {}), // si existe local (con rows), usarlo
+      ...(localById[r.id] || {}),
       id: r.id, date: r.date,
       priceTotal: r.price_total, fxPct: r.fx_pct, fxGain: r.fx_gain, total: r.total,
-      rows: localById[r.id]?.rows || [], // rows solo si estaba en los últimos 90 días
+      totalSaldo: Number(r.total_saldo) || 0,
+      rows: localById[r.id]?.rows || [],
     })).sort((a, b) => new Date(a.date) - new Date(b.date));
 
     fullHistoryLoaded = true;
@@ -3993,11 +3998,11 @@ async function sbUpsertHistory(entries) {
   if (!entries.length) return;
   const rows = entries.map((e) => ({
     id: e.id, user_id: SB_USER, date: e.date,
-    rows: e.rows, price_total: e.priceTotal, fx_pct: e.fxPct,
+    rows: e.rows,
+    price_total: e.priceTotal, fx_pct: e.fxPct,
     fx_gain: e.fxGain, total: e.total,
+    total_saldo: e.totalSaldo || (e.rows?.reduce((s, r) => s + (r.saldo || 0), 0) || 0),
   }));
-  // Supabase tiene un límite de tamaño por request. Con 1279 días × 8 posiciones cada uno,
-  // el payload puede ser muy grande. Subimos en chunks de 100 días para evitar timeouts.
   const CHUNK = 100;
   for (let i = 0; i < rows.length; i += CHUNK) {
     await sbRequest("POST", "history", rows.slice(i, i + CHUNK), "?on_conflict=id");
