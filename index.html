@@ -4331,19 +4331,110 @@ startAutoRefresh();
 // toca explícitamente "Subir todo a la nube".
 syncPullFromCloud();
 
-// Eliminamos el Service Worker — causaba que versiones viejas de la app se sirvieran
-// desde caché incluso después de actualizar el archivo en GitHub, corrompiendo el estado
-// y dejando la app en pantalla negra. Las notificaciones push se pueden reimplementar
-// sin SW usando una solución alternativa en el futuro.
+// ─────────────────────────────────────────────────────────────────────────────
+//  INSTRUCCIONES DE INTEGRACIÓN
+//  Buscar en index.html el bloque que dice:
+//
+//    // Eliminamos el Service Worker — causaba que versiones viejas…
+//    if ("serviceWorker" in navigator) {
+//      navigator.serviceWorker.getRegistrations().then(…)
+//    }
+//
+//  Reemplazarlo COMPLETAMENTE por este bloque:
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Registro del Service Worker ──────────────────────────────────────────────
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.getRegistrations().then((registrations) => {
-    registrations.forEach((reg) => {
-      reg.unregister();
-      console.log("[sw] Service Worker eliminado:", reg.scope);
+  navigator.serviceWorker.register("./sw.js", { scope: "./" })
+    .then((reg) => {
+      console.log("[sw] Registrado. Scope:", reg.scope);
+
+      // Detectar cuando hay un nuevo SW instalándose
+      reg.addEventListener("updatefound", () => {
+        const newSW = reg.installing;
+        if (!newSW) return;
+
+        newSW.addEventListener("statechange", () => {
+          // "installed" + controlador previo = nueva versión lista para activar
+          if (newSW.state === "installed" && navigator.serviceWorker.controller) {
+            showUpdateBanner();
+          }
+        });
+      });
+    })
+    .catch((err) => {
+      console.warn("[sw] Error al registrar:", err);
     });
+
+  // Si el SW tomó el control después de una actualización (skipWaiting),
+  // recargar para que la página nueva se sirva en esta pestaña también.
+  let refreshing = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (refreshing) return;
+    refreshing = true;
+    // Solo recargamos si el usuario ya apretó "Actualizar" en el banner.
+    // Para no recargar involuntariamente al abrir la app por primera vez,
+    // chequeamos si el banner estaba visible.
+    if (document._swUpdateBannerShown) {
+      window.location.reload();
+    }
   });
 }
 
-</script>
-</body>
-</html>
+// ── Banner "Nueva versión disponible" ────────────────────────────────────────
+// Aparece en la parte inferior de la pantalla cuando hay una actualización lista.
+// El usuario decide cuándo recargar — nunca se hace de forma automática.
+function showUpdateBanner() {
+  if (document.getElementById("sw-update-banner")) return; // no duplicar
+  document._swUpdateBannerShown = true;
+
+  const banner = document.createElement("div");
+  banner.id = "sw-update-banner";
+  banner.style.cssText = [
+    "position:fixed",
+    "bottom:20px",
+    "left:50%",
+    "transform:translateX(-50%)",
+    "background:var(--accent-gold)",
+    "color:var(--on-accent)",
+    "padding:11px 20px",
+    "border-radius:24px",
+    "font-family:'Inter',sans-serif",
+    "font-size:13px",
+    "font-weight:600",
+    "z-index:9999",
+    "display:flex",
+    "align-items:center",
+    "gap:12px",
+    "box-shadow:0 4px 20px rgba(0,0,0,0.4)",
+    "cursor:default",
+    "white-space:nowrap",
+  ].join(";");
+
+  banner.innerHTML = `
+    <span>↑ Nueva versión disponible</span>
+    <button
+      onclick="document._swUpdateBannerShown=true; navigator.serviceWorker.getRegistration().then(r=>r&&r.waiting&&r.waiting.postMessage({type:'SKIP_WAITING'})); this.closest('#sw-update-banner').remove();"
+      style="background:rgba(0,0,0,0.18);border:none;color:inherit;font:inherit;
+             padding:5px 14px;border-radius:14px;cursor:pointer;font-size:12px;font-weight:700">
+      Actualizar
+    </button>
+    <button
+      onclick="this.closest('#sw-update-banner').remove()"
+      aria-label="Cerrar"
+      style="background:none;border:none;color:inherit;font-size:16px;cursor:pointer;
+             padding:0 2px;line-height:1;opacity:.7">
+      ✕
+    </button>
+  `;
+
+  document.body.appendChild(banner);
+}
+
+// ── Recibir la señal SKIP_WAITING desde el banner ────────────────────────────
+// El SW escucha este mensaje para activarse de inmediato cuando el usuario
+// aprieta "Actualizar" (en vez de esperar a que cierre todas las pestañas).
+// Esto ya está manejado en sw.js con self.skipWaiting() en el install,
+// pero el postMessage es el canal para forzarlo desde la página si fuera necesario.
+// (La línea de abajo va en sw.js, ya incluida — se deja aquí solo como referencia)
+// self.addEventListener("message", (e) => { if (e.data?.type === "SKIP_WAITING") self.skipWaiting(); });
