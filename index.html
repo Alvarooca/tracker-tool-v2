@@ -2871,6 +2871,7 @@ async function importRealHistory() {
 
   // Subir a Supabase el historial completo antes de recortar localStorage
   await sbUpsertHistory(state.history);
+  fullHistoryLoaded = true; // ya está en memoria y en Supabase, no recargar innecesariamente
 
   // Solo recortamos lo que se guarda en localStorage (para no llenarlo),
   // pero state.history en MEMORIA queda completo para que los gráficos
@@ -3464,9 +3465,35 @@ function switchTab(tab) {
   else if (tab === "posicoes") resetPosicoesState();
   else if (tab === "historico") {
     resetHistoricoState();
-    autoFillHistoryGaps(); // dispara en segundo plano; importRealHistory() ya hace su propio render()
+    loadFullHistoryFromCloud(); // carga el historial completo desde Supabase en segundo plano
   }
   render();
+}
+
+// Carga el historial completo desde Supabase solo cuando el usuario entra a "Historial".
+// Al abrir la app solo se cargan los últimos 90 días (para no saturar memoria/localStorage).
+// Esta función trae todos los registros históricos para mostrar los gráficos completos desde 2021.
+let fullHistoryLoaded = false;
+async function loadFullHistoryFromCloud() {
+  if (fullHistoryLoaded && state.history.length > 90) return; // ya está cargado
+  try {
+    // Cargar en dos bloques para evitar el límite de 1000 filas de Supabase
+    const [block1, block2, block3] = await Promise.all([
+      sbRequest("GET", "history", null, `?user_id=eq.${SB_USER}&select=id,date,rows,price_total,fx_pct,fx_gain,total&order=date.asc&offset=0&limit=500`),
+      sbRequest("GET", "history", null, `?user_id=eq.${SB_USER}&select=id,date,rows,price_total,fx_pct,fx_gain,total&order=date.asc&offset=500&limit=500`),
+      sbRequest("GET", "history", null, `?user_id=eq.${SB_USER}&select=id,date,rows,price_total,fx_pct,fx_gain,total&order=date.asc&offset=1000&limit=500`),
+    ]);
+    const all = [...(block1 || []), ...(block2 || []), ...(block3 || [])];
+    if (!all.length) return;
+    state.history = all.map((r) => ({
+      id: r.id, date: r.date, rows: r.rows,
+      priceTotal: r.price_total, fxPct: r.fx_pct, fxGain: r.fx_gain, total: r.total,
+    })).sort((a, b) => new Date(a.date) - new Date(b.date));
+    fullHistoryLoaded = true;
+    render(); // re-renderizar con el historial completo
+  } catch (e) {
+    console.warn("[supabase] Error al cargar historial completo:", e);
+  }
 }
 
 // A diferencia de resetHojeState() (que se usa para descartar/cancelar a propósito), esta
@@ -4020,12 +4047,19 @@ async function sbUpsertSplits(splits) {
 
 async function syncPullFromCloud() {
   try {
+    // Para el historial, solo bajamos los últimos 90 días al abrir la app —
+    // suficiente para el funcionamiento diario y los gráficos recientes.
+    // El historial completo se carga solo cuando el usuario entra a "Historial".
+    const ninetyDaysAgo = new Date();
+    ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+    const ninetyDaysAgoStr = ninetyDaysAgo.toISOString().slice(0, 10);
+
     const [cloudHistory, cloudTxs, cloudPortfolio, cloudSplits, cloudSettings] = await Promise.all([
-      sbRequest("GET", "history", null, `?user_id=eq.${SB_USER}&select=*&order=date.asc&limit=10000`),
+      sbRequest("GET", "history", null, `?user_id=eq.${SB_USER}&select=*&order=date.asc&date=gte.${ninetyDaysAgoStr}T00:00:00`),
       sbRequest("GET", "transactions", null, `?user_id=eq.${SB_USER}&select=*&order=date.asc&limit=10000`),
-      sbRequest("GET", "portfolio", null, `?user_id=eq.${SB_USER}&select=*&order=sort_order.asc&limit=1000`),
-      sbRequest("GET", "splits", null, `?user_id=eq.${SB_USER}&select=*&limit=1000`),
-      sbRequest("GET", "settings", null, `?user_id=eq.${SB_USER}&select=*&limit=1000`),
+      sbRequest("GET", "portfolio", null, `?user_id=eq.${SB_USER}&select=*&order=sort_order.asc`),
+      sbRequest("GET", "splits", null, `?user_id=eq.${SB_USER}&select=*`),
+      sbRequest("GET", "settings", null, `?user_id=eq.${SB_USER}&select=*`),
     ]);
 
     let changed = false;
