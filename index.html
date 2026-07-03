@@ -2868,6 +2868,15 @@ async function importRealHistory() {
     });
 
   state.history = [...state.history, ...newEntries].sort((a, b) => new Date(a.date) - new Date(b.date));
+
+  // Subir PRIMERO a Supabase el historial completo (antes de recortar en memoria).
+  // Luego recortamos state.history a los últimos 90 días para que localStorage no se llene
+  // y la app no se corrompa al intentar guardar miles de entradas. El historial completo
+  // siempre vive en Supabase y se recupera con "Bajar desde la nube".
+  await sbUpsertHistory(state.history);
+  const cutoff90 = new Date();
+  cutoff90.setDate(cutoff90.getDate() - 90);
+  state.history = state.history.filter((e) => new Date(e.date) >= cutoff90);
   persistHistory();
 
   h.importStatus = "idle";
@@ -4019,15 +4028,16 @@ async function syncPullFromCloud() {
     // Historial — agregar entradas que faltan localmente
     if (cloudHistory?.length) {
       // La nube tiene el historial COMPLETO. Local solo tiene los últimos 90 días (para no
-      // llenar el localStorage). Al hacer pull, siempre usamos la nube como fuente de verdad
-      // para el historial — reemplazamos state.history completo con lo de la nube.
+      // llenar el localStorage). Al hacer pull, cargamos TODO en state.history (memoria)
+      // para que los gráficos funcionen con el historial completo, pero solo guardamos
+      // 90 días en localStorage.
       const cloudMapped = cloudHistory.map((r) => ({
         id: r.id, date: r.date, rows: r.rows,
         priceTotal: r.price_total, fxPct: r.fx_pct, fxGain: r.fx_gain, total: r.total
       }));
       if (cloudMapped.length !== state.history.length ||
           cloudMapped.some((c) => !state.history.find((h) => h.id === c.id))) {
-        state.history = cloudMapped;
+        state.history = cloudMapped; // en memoria: historial completo para gráficos
         changed = true;
       }
     }
