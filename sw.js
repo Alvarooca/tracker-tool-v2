@@ -9,7 +9,7 @@
 //  de inmediato gracias a skipWaiting() + clients.claim().
 // ─────────────────────────────────────────────────────────────────────────────
 
-const CACHE_VERSION = "v5";
+const CACHE_VERSION = "v6";
 const CACHE_SHELL   = `pnl-shell-${CACHE_VERSION}`;   // HTML + JS del app
 const CACHE_STATIC  = `pnl-static-${CACHE_VERSION}`;  // fuentes, iconos, manifest
 
