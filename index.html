@@ -1686,8 +1686,10 @@ function saveHistoryAction() {
   const h = state.hoje;
   if (!h.result) return;
   const nowIso = new Date().toISOString();
+  const todayBZ = brazilTodayYMD();
+  const fixedId = `day-${todayBZ}`; // ID fijo por fecha — evita duplicados en Supabase
   const entry = {
-    id: uid(),
+    id: fixedId,
     date: nowIso,
     rows: h.result.rows,
     fxPct: h.result.fxPct,
@@ -1697,14 +1699,9 @@ function saveHistoryAction() {
     totalSaldo: h.result.rows.reduce((s, r) => s + (parseNum(r.saldo) || 0), 0),
   };
 
-  // Si ya existe un registro de hoy (hora de Brasil) — por ejemplo el guardado automático
-  // de las 20:00 — se reemplaza en vez de crear un duplicado. Así, tocar de nuevo el botón
-  // "Buscar variación automáticamente"/"Actualizar variación" el mismo día actualiza el
-  // registro existente en lugar de acumular varias entradas para el mismo día.
-  const todayBZ = brazilTodayYMD();
   const existingIdx = state.history.findIndex((e) => dateToBrazilYMD(e.date) === todayBZ);
   if (existingIdx !== -1) {
-    entry.id = state.history[existingIdx].id;
+    entry.id = state.history[existingIdx].id; // preservar ID existente si ya había uno
     state.history = [...state.history.slice(0, existingIdx), entry, ...state.history.slice(existingIdx + 1)];
   } else {
     state.history = [...state.history, entry];
@@ -3500,8 +3497,16 @@ async function loadFullHistoryFromCloud() {
     const all = [...(block1 || []), ...(block2 || []), ...(block3 || [])];
     if (!all.length) { state.historico.importStatus = "idle"; state.historico.importProgressLabel = null; render(); return; }
 
+    // Deduplicar por fecha (YYYY-MM-DD) — quedarse con el registro más reciente por día
+    const byDate = {};
+    all.forEach((r) => {
+      const day = String(r.date).slice(0, 10);
+      if (!byDate[day] || r.date > byDate[day].date) byDate[day] = r;
+    });
+    const deduped = Object.values(byDate).sort((a, b) => a.date.localeCompare(b.date));
+
     const localById = Object.fromEntries(state.history.map((h) => [h.id, h]));
-    state.history = all.map((r) => ({
+    state.history = deduped.map((r) => ({
       ...(localById[r.id] || {}),
       id: r.id, date: r.date,
       priceTotal: r.price_total, fxPct: r.fx_pct, fxGain: r.fx_gain, total: r.total,
@@ -4091,17 +4096,21 @@ async function syncPullFromCloud() {
 
     // Historial — agregar entradas que faltan localmente
     if (cloudHistory?.length) {
-      // La nube tiene el historial COMPLETO. Local solo tiene los últimos 90 días (para no
-      // llenar el localStorage). Al hacer pull, cargamos TODO en state.history (memoria)
-      // para que los gráficos funcionen con el historial completo, pero solo guardamos
-      // 90 días en localStorage.
       const cloudMapped = cloudHistory.map((r) => ({
         id: r.id, date: r.date, rows: r.rows,
-        priceTotal: r.price_total, fxPct: r.fx_pct, fxGain: r.fx_gain, total: r.total
+        priceTotal: r.price_total, fxPct: r.fx_pct, fxGain: r.fx_gain, total: r.total,
+        totalSaldo: Number(r.total_saldo) || 0,
       }));
-      if (cloudMapped.length !== state.history.length ||
-          cloudMapped.some((c) => !state.history.find((h) => h.id === c.id))) {
-        state.history = cloudMapped; // en memoria: historial completo para gráficos
+      // Fusionar local + nube deduplicando por fecha (YYYY-MM-DD), más reciente gana
+      const allEntries = [...state.history, ...cloudMapped];
+      const byDate = {};
+      allEntries.forEach((e) => {
+        const day = String(e.date).slice(0, 10);
+        if (!byDate[day] || String(e.date) > String(byDate[day].date)) byDate[day] = e;
+      });
+      const merged = Object.values(byDate).sort((a, b) => new Date(a.date) - new Date(b.date));
+      if (merged.length !== state.history.length || merged.some((m, i) => m.id !== state.history[i]?.id)) {
+        state.history = merged;
         changed = true;
       }
     }
