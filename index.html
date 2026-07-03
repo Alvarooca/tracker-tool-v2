@@ -3909,7 +3909,14 @@ document.addEventListener("visibilitychange", () => {
 
 const SUPABASE_URL = "https://uylqfjbyouretvyfrlyy.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV5bHFmamJ5b3VyZXR2eWZybHl5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI5MjQxNzcsImV4cCI6MjA5ODUwMDE3N30.BOHnj6vsyqfsZfmcpYCLDx8tyYsS-B_SbEq40lDcSbk";
-const SB_HEADERS = { "Content-Type": "application/json", "apikey": SUPABASE_ANON_KEY, "Authorization": `Bearer ${SUPABASE_ANON_KEY}`, "Prefer": "resolution=merge-duplicates" };
+const SB_HEADERS = {
+  "Content-Type": "application/json",
+  "apikey": SUPABASE_ANON_KEY,
+  "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
+  "Prefer": "resolution=merge-duplicates",
+  "Range-Unit": "items",
+  "Range": "0-9999", // permite hasta 10000 filas por query (suficiente para años de historial)
+};
 const SB_USER = "default"; // app personal, un solo usuario
 
 // Helper base para llamadas a la API REST de Supabase
@@ -4014,11 +4021,11 @@ async function sbUpsertSplits(splits) {
 async function syncPullFromCloud() {
   try {
     const [cloudHistory, cloudTxs, cloudPortfolio, cloudSplits, cloudSettings] = await Promise.all([
-      sbRequest("GET", "history", null, `?user_id=eq.${SB_USER}&select=*&order=date.asc`),
-      sbRequest("GET", "transactions", null, `?user_id=eq.${SB_USER}&select=*&order=date.asc`),
-      sbRequest("GET", "portfolio", null, `?user_id=eq.${SB_USER}&select=*&order=sort_order.asc`),
-      sbRequest("GET", "splits", null, `?user_id=eq.${SB_USER}&select=*`),
-      sbRequest("GET", "settings", null, `?user_id=eq.${SB_USER}&select=*`),
+      sbRequest("GET", "history", null, `?user_id=eq.${SB_USER}&select=*&order=date.asc&limit=10000`),
+      sbRequest("GET", "transactions", null, `?user_id=eq.${SB_USER}&select=*&order=date.asc&limit=10000`),
+      sbRequest("GET", "portfolio", null, `?user_id=eq.${SB_USER}&select=*&order=sort_order.asc&limit=1000`),
+      sbRequest("GET", "splits", null, `?user_id=eq.${SB_USER}&select=*&limit=1000`),
+      sbRequest("GET", "settings", null, `?user_id=eq.${SB_USER}&select=*&limit=1000`),
     ]);
 
     let changed = false;
