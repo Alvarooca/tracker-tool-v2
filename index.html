@@ -520,20 +520,30 @@ function persistPortfolio(skipCloud = false) {
 function persistHistory() {
   try {
     const sorted = [...state.history].sort((a, b) => new Date(b.date) - new Date(a.date));
-    // Deduplicar por día (YYYY-MM-DD) — quedarse con el más reciente de cada día
+    // Deduplicar por día (YYYY-MM-DD) — entradas reales ganan sobre day-* del backfill
     const byDate = {};
+    const isBackfill = (e) => String(e.id).startsWith("day-");
     sorted.forEach((e) => {
       const day = String(e.date).slice(0, 10);
-      if (!byDate[day]) byDate[day] = e;
+      const existing = byDate[day];
+      if (!existing) { byDate[day] = e; return; }
+      if (!isBackfill(existing) && isBackfill(e)) return; // real gana sobre backfill
+      if (isBackfill(existing) && !isBackfill(e)) { byDate[day] = e; return; }
+      // ambas del mismo tipo: ya está la más reciente (sorted desc)
     });
-    const deduped = Object.values(byDate).sort((a, b) => new Date(b.date) - new Date(a.date));
+    // No guardar entradas day-* en localStorage — no deben propagarse entre dispositivos
+    const deduped = Object.values(byDate)
+      .filter((e) => !isBackfill(e))
+      .sort((a, b) => new Date(b.date) - new Date(a.date));
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - 90);
     const recent = deduped.filter((e) => new Date(e.date) >= cutoff);
     localStorage.setItem("pnl-history", JSON.stringify(recent));
   } catch (_) {
     try {
-      const sorted = [...state.history].sort((a, b) => new Date(b.date) - new Date(a.date));
+      const sorted = [...state.history]
+        .filter((e) => !String(e.id).startsWith("day-"))
+        .sort((a, b) => new Date(b.date) - new Date(a.date));
       const cutoff = new Date();
       cutoff.setDate(cutoff.getDate() - 30);
       const recent = sorted.filter((e) => new Date(e.date) >= cutoff);
@@ -4003,7 +4013,11 @@ async function sbRequest(method, table, body = null, query = "") {
 
 async function sbUpsertHistory(entries) {
   if (!entries.length) return;
-  const rows = entries.map((e) => ({
+  // Nunca subir entradas del backfill externo (day-*) — son solo para relleno histórico
+  // y no deben circular entre dispositivos ni pisar entradas reales en Supabase.
+  const filtered = entries.filter((e) => !String(e.id).startsWith("day-"));
+  if (!filtered.length) return;
+  const rows = filtered.map((e) => ({
     id: e.id, user_id: SB_USER, date: e.date,
     rows: e.rows,
     price_total: e.priceTotal, fx_pct: e.fxPct,
@@ -4103,12 +4117,22 @@ async function syncPullFromCloud() {
         priceTotal: r.price_total, fxPct: r.fx_pct, fxGain: r.fx_gain, total: r.total,
         totalSaldo: Number(r.total_saldo) || 0,
       }));
-      // Fusionar local + nube deduplicando por fecha (YYYY-MM-DD), más reciente gana
+      // Fusionar local + nube deduplicando por fecha (YYYY-MM-DD).
+      // Prioridad: entradas reales (row-*, real-*) > entradas del backfill (day-*)
+      // Si el mismo día tiene una entrada real y una del backfill, gana la real siempre.
       const allEntries = [...state.history, ...cloudMapped];
       const byDate = {};
+      const isBackfillEntry = (e) => String(e.id).startsWith("day-");
       allEntries.forEach((e) => {
         const day = String(e.date).slice(0, 10);
-        if (!byDate[day] || String(e.date) > String(byDate[day].date)) byDate[day] = e;
+        const existing = byDate[day];
+        if (!existing) { byDate[day] = e; return; }
+        // Si la existente es real y la nueva es backfill → ignorar la nueva
+        if (!isBackfillEntry(existing) && isBackfillEntry(e)) return;
+        // Si la existente es backfill y la nueva es real → usar la nueva
+        if (isBackfillEntry(existing) && !isBackfillEntry(e)) { byDate[day] = e; return; }
+        // Ambas del mismo tipo → más reciente gana
+        if (String(e.date) > String(existing.date)) byDate[day] = e;
       });
       const merged = Object.values(byDate).sort((a, b) => new Date(a.date) - new Date(b.date));
       if (merged.length !== state.history.length || merged.some((m, i) => m.id !== state.history[i]?.id)) {
