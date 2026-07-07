@@ -1526,6 +1526,10 @@ function renderHojeReviewResult() {
 
   const errorBanner = h.error ? `<div class="banner banner-warn">${icon("alert-triangle", 15)} ${escapeHtml(h.error)}</div>` : "";
   const headerExtra = showResultColumns ? `<button class="icon-btn" data-action="edit-review" title="Editar valores">${icon("pencil", 14)}</button>` : "";
+  const updatedLabel = h.updatedAt ? timeAgoLabel(h.updatedAt) : "";
+  const updatedRow = updatedLabel
+    ? `<p class="muted small" style="margin:-6px 0 10px">${icon("history", 12)} ${escapeHtml(updatedLabel)}</p>`
+    : "";
 
   const tableHtml = `
     <div class="table-scroll"><table class="table">
@@ -1549,14 +1553,12 @@ function renderHojeReviewResult() {
       </div>`;
   } else if (h.status === "result") {
     const r = h.result;
-    const updatedLabel = h.updatedAt ? timeAgoLabel(h.updatedAt) : "";
     footer = `
       <div class="summary">
         <div class="summary-line"><span>Variación por precios</span><span class="${r.priceTotal >= 0 ? "up" : "down"}">${fmtBRL(r.priceTotal)}</span></div>
         <div class="summary-line"><span>Efecto dólar (${fmtPct(r.fxPct)})</span><span class="${r.fxGain >= 0 ? "up" : "down"}">${fmtBRL(r.fxGain)}</span></div>
         <div class="summary-line summary-total"><span>Total estimado</span><span class="${r.total >= 0 ? "up" : "down"}">${fmtBRL(r.total)}</span></div>
       </div>
-      ${updatedLabel ? `<p class="muted small" style="margin-top:8px">${icon("history", 13)} ${escapeHtml(updatedLabel)}</p>` : ""}
       <div class="banner banner-warn">${icon("alert-triangle", 15)} Vista previa — se guarda sola en el historial a las ${AUTO_SAVE_HOUR_BRAZIL}:00 hora de Brasil.</div>
       <div class="row-actions">
         <button class="btn btn-ghost" data-action="discard-result">${icon("x", 15)} Cerrar vista previa</button>
@@ -1581,6 +1583,7 @@ function renderHojeReviewResult() {
   return `<div class="card">
     ${errorBanner}
     <div class="card-title-row"><h2 class="card-title">Variación del día por activo</h2>${headerExtra}</div>
+    ${updatedRow}
     ${tableHtml}
     ${footer}
   </div>`;
@@ -1969,7 +1972,7 @@ function renderDividendsCard() {
 }
 
 function renderUnrealized(rows) {
-  const withCost = rows.filter((r) => typeof r.avgCost === "number" && r.avgCost > 0);
+  const withCost = rows.filter((r) => typeof r.avgCost === "number" && Number.isFinite(r.avgCost) && r.avgCost > 0);
   if (!withCost.length) return "";
   const fx = parseNum(state.posicoes.fxRateInput);
 
@@ -1993,7 +1996,7 @@ function renderUnrealized(rows) {
       const gainUsd = nowValueUsd - costBasisUsd;
       const pctUsd = costBasisUsd ? (gainUsd / costBasisUsd) * 100 : 0;
 
-      const hasHistoricalFx = typeof r.avgCostBrl === "number" && r.avgCostBrl > 0;
+      const hasHistoricalFx = typeof r.avgCostBrl === "number" && Number.isFinite(r.avgCostBrl) && r.avgCostBrl > 0;
       let gainBrl = null;
       let approximated = false;
       let fxEffectBrl = null; // parte de la ganancia en reales que viene SOLO del cambio (no del precio)
@@ -2031,7 +2034,7 @@ function renderUnrealized(rows) {
           : "";
       return `<tr>
         <td><div class="ticker-cell">${avatarHtml(r.ticker, state.posicoes?.logos?.[r.ticker], 20)}<span><b>${escapeHtml(r.ticker)}</b></span></div></td>
-        <td class="num small">$${r.avgCost.toFixed(2)}</td>
+        <td class="num small">${typeof r.avgCost === "number" ? "$" + r.avgCost.toFixed(2) : "—"}</td>
         <td class="num small">${hasPrice ? "$" + price.toFixed(2) : "—"}</td>
         <td class="num ${hasPrice ? (gainUsd >= 0 ? "up" : "down") : "muted"}"><b>${hasPrice ? (gainBrl !== null ? fmtBRL(gainBrl) : `US$ ${gainUsd.toFixed(2)}`) : "—"}${approxBadge}</b>${hasPrice ? `<br><span class="small">${fmtPct(pctUsd)}</span>${fxLine}` : ""}</td>
       </tr>`;
