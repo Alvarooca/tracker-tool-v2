@@ -1503,7 +1503,7 @@ function renderHojeReviewResult() {
       const row = h.result?.rows ? h.result.rows.find((r) => r.id === p.id) : null;
       const priceInfo = h.priceByTicker?.[p.ticker];
       const priceCell = priceInfo
-        ? `<span class="small muted" style="font-variant-numeric:tabular-nums">US$ ${priceInfo.price.toFixed(2)} <span style="opacity:.6">(${priceInfo.prevClose.toFixed(2)})</span></span>`
+        ? `<span class="small muted" style="font-variant-numeric:tabular-nums">US$ ${priceInfo.price.toFixed(2)}${typeof priceInfo.prevClose === "number" ? ` <span style="opacity:.6">(${priceInfo.prevClose.toFixed(2)})</span>` : ""}</span>`
         : "";
       const pctCell =
         h.status === "review"
