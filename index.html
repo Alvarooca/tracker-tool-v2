@@ -738,15 +738,18 @@ function resetHojeState() {
   // nunca guarda en el historial: el historial solo lo actualiza el proceso automático).
   const todayEntry = state.history.find((e) => dateToBrazilYMD(e.date) === brazilTodayYMD());
   if (todayEntry) {
+    const todayRows = todayEntry.rows || []; // entradas "lite" (cargadas de la nube sin
+    // detalle por activo) no traen `rows` — se normaliza acá a [] para que nada aguas abajo
+    // (renderHoje, la cinta de precios, etc.) reciba `undefined` y rompa el render entero.
     const reviewMap = {};
-    todayEntry.rows.forEach((r) => { reviewMap[r.id] = String(r.changePct); });
+    todayRows.forEach((r) => { reviewMap[r.id] = String(r.changePct); });
     state.hoje = {
       status: "saved",
       error: null,
       reviewMap,
       fxPctInput: String(todayEntry.fxPct),
       result: {
-        rows: todayEntry.rows,
+        rows: todayRows,
         priceTotal: todayEntry.priceTotal,
         fxPct: todayEntry.fxPct,
         fxGain: todayEntry.fxGain,
@@ -1192,6 +1195,12 @@ async function compareCdi() {
 function startEditEntry(id) {
   const entry = state.history.find((h) => h.id === id);
   if (!entry) return;
+  if (!entry.rows || !entry.rows.length) {
+    // Entrada "lite" (cargada desde la nube sin el detalle por activo, para ahorrar memoria
+    // en el historial completo): no se puede editar activo por activo sin ese detalle.
+    alert("Esta entrada no tiene el detalle por activo cargado. Volvé a intentarlo después de que la app termine de sincronizar, o entrá a Historial de nuevo.");
+    return;
+  }
   const map = {};
   entry.rows.forEach((r) => { map[r.id] = String(r.changePct); });
   state.historico.editingId = id;
@@ -1208,7 +1217,7 @@ function cancelEditEntry() {
 function saveEntryEdit() {
   const hs = state.historico;
   const entry = state.history.find((h) => h.id === hs.editingId);
-  if (!entry) return;
+  if (!entry || !entry.rows || !entry.rows.length) { hs.editingId = null; render(); return; }
   const fxPct = parseNum(hs.editFxInput);
   const totalSaldoAtEntry = entry.rows.reduce((s, r) => s + parseNum(r.saldo), 0);
   entry.rows = entry.rows.map((r) => {
@@ -1373,7 +1382,7 @@ function renderTickerTape(portfolio, lastEntry) {
   const quotes = state.posicoes?.quotes || {};
   const uniqueTickers = [...new Set(portfolio.map((p) => p.ticker))];
   const itemsByTicker = {};
-  if (lastEntry) lastEntry.rows.forEach((r) => { itemsByTicker[r.ticker] = r.changePct; });
+  if (lastEntry) (lastEntry.rows || []).forEach((r) => { itemsByTicker[r.ticker] = r.changePct; });
   const tapeItems = uniqueTickers.map((t) => ({ ticker: t, pct: itemsByTicker[t] }));
   if (lastEntry) tapeItems.push({ ticker: "USD/BRL", pct: lastEntry.fxPct });
   const doubled = [...tapeItems, ...tapeItems];
@@ -1435,7 +1444,7 @@ function renderHojeReviewResult() {
 
   const rowsHtml = portfolio
     .map((p) => {
-      const row = h.result ? h.result.rows.find((r) => r.id === p.id) : null;
+      const row = h.result?.rows ? h.result.rows.find((r) => r.id === p.id) : null;
       const priceInfo = h.priceByTicker?.[p.ticker];
       const priceCell = priceInfo
         ? `<span class="small muted" style="font-variant-numeric:tabular-nums">US$ ${priceInfo.price.toFixed(2)} <span style="opacity:.6">(${priceInfo.prevClose.toFixed(2)})</span></span>`
@@ -3456,7 +3465,7 @@ function exportCsv() {
     .sort((a, b) => new Date(a.date) - new Date(b.date))
     .forEach((h) => {
       const pctByTicker = {};
-      h.rows.forEach((r) => { pctByTicker[r.ticker] = r.changePct; });
+      (h.rows || []).forEach((r) => { pctByTicker[r.ticker] = r.changePct; });
       const row = [
         fmtFullDate(h.date),
         h.priceTotal.toFixed(2),
@@ -3554,6 +3563,29 @@ function syncHojeOnTabEnter() {
 }
 
 function render() {
+  try {
+    renderInner();
+  } catch (err) {
+    // Red de seguridad: si algo inesperado rompe el render (p. ej. una entrada de historial
+    // con datos incompletos que se nos haya escapado), mostramos una pantalla de recuperación
+    // en vez de dejar la app congelada — antes, cualquier error acá dejaba `root.innerHTML`
+    // sin actualizar, así que tocar cualquier pestaña no hacía nada visible, y la única forma
+    // de recuperarse era borrar todo el storage del navegador (perdiendo API keys, etc.).
+    console.error("[render] Error inesperado:", err);
+    const root = document.getElementById("app");
+    if (root) {
+      root.innerHTML = `
+        <div style="padding:24px;font-family:sans-serif;color:#ECEFF2;background:#0A0D10;min-height:100vh;">
+          <h2 style="font-size:16px;">Algo salió mal al mostrar la app</h2>
+          <p style="font-size:13px;color:#ABB2BC;line-height:1.5;">Hubo un error al procesar los datos guardados. Podés intentar recargar la página, o limpiar el historial local guardado en este dispositivo (no borra nada de la nube — al recargar se vuelve a descargar desde Supabase).</p>
+          <p style="font-size:11px;color:#7A8290;font-family:monospace;">${escapeHtml(String(err?.message || err))}</p>
+          <button onclick="localStorage.removeItem('pnl-history'); location.reload();" style="margin-top:12px;padding:10px 16px;background:#E8B339;color:#15130A;border:none;border-radius:8px;font-weight:600;cursor:pointer;">Limpiar historial local y recargar</button>
+        </div>`;
+    }
+  }
+}
+
+function renderInner() {
   const root = document.getElementById("app");
   // El total del header debe ser siempre el mismo sin importar la pestaña activa.
   // Antes, en "Hoy"/"Historial" se usaba el saldo PERSISTIDO (state.portfolio.saldo,
@@ -4117,7 +4149,9 @@ async function syncPullFromCloud() {
     // Historial — agregar entradas que faltan localmente
     if (cloudHistory?.length) {
       const cloudMapped = cloudHistory.map((r) => ({
-        id: r.id, date: r.date, rows: r.rows,
+        id: r.id, date: r.date, rows: r.rows || [], // Postgres puede devolver null en la
+        // columna jsonb si la fila se guardó alguna vez sin detalle por activo — normalizar
+        // acá evita que `undefined`/`null` se propague y rompa el render más adelante.
         priceTotal: r.price_total, fxPct: r.fx_pct, fxGain: r.fx_gain, total: r.total,
         totalSaldo: Number(r.total_saldo) || 0,
       }));
