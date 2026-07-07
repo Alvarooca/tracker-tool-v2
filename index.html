@@ -90,7 +90,8 @@ html, body { margin: 0; padding: 0; background: var(--bg-app); }
 .fx-label-group { display: flex; flex-direction: column; gap: 2px; padding-left: 8px; }
 .fx-pair-label { font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: var(--text-muted); letter-spacing: 0.1em; }
 .fx-rate { font-family: 'IBM Plex Mono', monospace; font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
-.fx-change { font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; }
+.fx-change { font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; flex-shrink: 0; margin-left: 10px; }
+.fx-spark { flex: 1; height: 26px; max-width: 100px; margin: 0 10px; }
 
 .install-pill { background: transparent; border: 1px solid var(--accent-gold); color: var(--accent-gold); font-family: 'Inter', sans-serif; font-size: 11px; font-weight: 600; padding: 7px 11px; border-radius: 20px; display: inline-flex; align-items: center; gap: 5px; cursor: pointer; white-space: nowrap; }
 .install-pill[hidden] { display: none; }
@@ -3609,6 +3610,50 @@ function syncHojeOnTabEnter() {
   resetHojeState();
 }
 
+// Reconstruye una serie aproximada del NIVEL del USD/BRL de los últimos `days` días hábiles,
+// encadenando hacia atrás la variación porcentual diaria (fxPct) guardada en el historial a
+// partir del nivel actual (fxRate). Es aproximada porque fxPct es la variación del día, no el
+// nivel exacto de cierre — pero al encadenarla desde el nivel de hoy el resultado sigue de
+// cerca la trayectoria real, suficiente para un sparkline de referencia visual.
+function reconstructFxSeries(currentRate, days = 12) {
+  if (!currentRate) return [];
+  const withFx = state.history.filter((e) => typeof e.fxPct === "number");
+  if (!withFx.length) return [];
+  const recent = withFx.slice(-days); // últimas N entradas, ya en orden cronológico ascendente
+  // Recorremos de la más reciente a la más antigua, dividiendo por (1 + pct/100) en cada paso
+  // para obtener el nivel de "ayer" a partir del nivel de "hoy" — el inverso de cómo se aplicó
+  // la variación al calcularla originalmente.
+  const levels = [currentRate];
+  let level = currentRate;
+  for (let i = recent.length - 1; i >= 0; i--) {
+    const pct = recent[i].fxPct;
+    if (typeof pct === "number" && Number.isFinite(pct) && pct > -100) {
+      level = level / (1 + pct / 100);
+    }
+    levels.unshift(level);
+  }
+  return levels;
+}
+
+function fxSparklineSvg(levels, isUp) {
+  if (levels.length < 2) return "";
+  const W = 90, H = 26, PAD = 3;
+  const min = Math.min(...levels), max = Math.max(...levels);
+  const range = max - min || 1;
+  const stepX = (W - PAD * 2) / (levels.length - 1);
+  const points = levels
+    .map((v, i) => {
+      const x = PAD + i * stepX;
+      const y = H - PAD - ((v - min) / range) * (H - PAD * 2);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+  const color = isUp ? "var(--up)" : "var(--down)";
+  return `<svg class="fx-spark" viewBox="0 0 ${W} ${H}" fill="none" aria-hidden="true">
+    <polyline points="${points}" stroke="${color}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>`;
+}
+
 function render() {
   try {
     renderInner();
@@ -3656,13 +3701,16 @@ function renderInner() {
   const dayChangeSource = isTodayEntry ? lastEntry : state.hoje && state.hoje.status === "result" ? state.hoje.result : null;
   const fxRate = parseNum(state.posicoes?.fxRateInput);
   const fxDayPct = dayChangeSource ? dayChangeSource.fxPct : null;
+  const fxLevels = reconstructFxSeries(fxRate);
+  const fxSparkIsUp = fxLevels.length >= 2 ? fxLevels[fxLevels.length - 1] >= fxLevels[0] : true;
   const fxStripHtml = fxRate
     ? `<div class="fx-strip">
         <div class="fx-label-group">
           <span class="fx-pair-label">USD / BRL</span>
           <span class="fx-rate">${fxRate.toFixed(4).replace(".", ",")}</span>
         </div>
-        ${typeof fxDayPct === "number" ? `<span class="fx-change ${fxDayPct >= 0 ? "up" : "down"}">${fxDayPct >= 0 ? "+" : ""}${fmtPct(fxDayPct)} hoy</span>` : ""}
+        ${fxSparklineSvg(fxLevels, fxSparkIsUp)}
+        ${typeof fxDayPct === "number" ? `<span class="fx-change ${fxDayPct >= 0 ? "up" : "down"}">${fmtPct(fxDayPct)} hoy</span>` : ""}
       </div>`
     : "";
   const dayChangeHtml = dayChangeSource
