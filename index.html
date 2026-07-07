@@ -1702,13 +1702,21 @@ function saveHistoryAction() {
   };
 
   const existingIdx = state.history.findIndex((e) => dateToBrazilYMD(e.date) === todayBZ);
+  let staleCloudId = null;
   if (existingIdx !== -1) {
-    entry.id = state.history[existingIdx].id; // preservar ID existente si ya había uno
+    // Siempre migrar al ID fijo `day-YYYY-MM-DD`, incluso si la entrada existente tenía un ID
+    // viejo (p. ej. el formato antiguo `row-<timestamp>-<random>`). Preservar el ID viejo acá
+    // fue lo que dejaba el duplicado del 2/7 vivo para siempre en Supabase: como el upsert de
+    // la nube resuelve conflictos por `id`, un ID que nunca cambia de formato nunca se fusiona
+    // con la fila `day-...` correcta. Si el ID va a cambiar, se guarda para borrar la fila
+    // vieja de la nube más abajo.
+    if (state.history[existingIdx].id !== fixedId) staleCloudId = state.history[existingIdx].id;
     state.history = [...state.history.slice(0, existingIdx), entry, ...state.history.slice(existingIdx + 1)];
   } else {
     state.history = [...state.history, entry];
   }
   persistHistory();
+  if (staleCloudId) sbDeleteHistoryId(staleCloudId); // limpia la fila vieja en la nube, fire-and-forget
 
   // Notificación push: avisa en todos los dispositivos que el historial se guardó
   const totalStr = entry.total >= 0 ? `+${fmtBRL(entry.total)}` : fmtBRL(entry.total);
@@ -4016,6 +4024,16 @@ async function sbUpsertHistory(entries) {
   }
 }
 
+// Borra una fila de historial en la nube por su ID viejo, usada cuando una entrada local se
+// migra del formato de ID antiguo (row-<timestamp>-<random>) al nuevo (day-YYYY-MM-DD). Sin
+// esto, el ID viejo se sigue re-subiendo cada vez que se llama a persistHistory() (porque
+// sbUpsertHistory resuelve conflictos por `id`, no por fecha) y el duplicado queda vivo en
+// Supabase para siempre aunque en pantalla ya no se vea (la UI deduplica por fecha al leer).
+async function sbDeleteHistoryId(id) {
+  if (!id) return;
+  await sbRequest("DELETE", "history", null, `?id=eq.${encodeURIComponent(id)}&user_id=eq.${SB_USER}`);
+}
+
 async function sbUpsertTransactions(txs) {
   if (!txs.length) return;
   const rows = txs.map((t) => ({
@@ -4103,8 +4121,32 @@ async function syncPullFromCloud() {
         priceTotal: r.price_total, fxPct: r.fx_pct, fxGain: r.fx_gain, total: r.total,
         totalSaldo: Number(r.total_saldo) || 0,
       }));
+
+      // Detectar y limpiar duplicados de la nube: dos o más filas con la misma fecha-Brasil
+      // (p. ej. un ID viejo `row-<timestamp>-<random>` y el nuevo `day-YYYY-MM-DD` para el
+      // mismo día). Se conserva la fila con `date` más reciente y se borran las demás — tanto
+      // localmente como en Supabase — para que el duplicado no reviva en cada sync.
+      const byBrDate = {};
+      cloudMapped.forEach((e) => {
+        const day = dateToBrazilYMD(e.date);
+        if (!byBrDate[day]) byBrDate[day] = [];
+        byBrDate[day].push(e);
+      });
+      const staleIds = [];
+      Object.values(byBrDate).forEach((group) => {
+        if (group.length <= 1) return;
+        group.sort((a, b) => new Date(b.date) - new Date(a.date)); // más reciente primero
+        group.slice(1).forEach((dup) => staleIds.push(dup.id));
+      });
+      if (staleIds.length) {
+        staleIds.forEach((id) => sbDeleteHistoryId(id)); // fire-and-forget
+        console.log(`[supabase] Eliminados ${staleIds.length} registro(s) de historial duplicado(s) de la nube`);
+      }
+      const staleSet = new Set(staleIds);
+      const cloudCleaned = cloudMapped.filter((e) => !staleSet.has(e.id));
+
       // Fusionar local + nube deduplicando por fecha (YYYY-MM-DD), más reciente gana
-      const allEntries = [...state.history, ...cloudMapped];
+      const allEntries = [...state.history, ...cloudCleaned];
       const byDate = {};
       allEntries.forEach((e) => {
         const day = String(e.date).slice(0, 10);
