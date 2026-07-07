@@ -797,8 +797,12 @@ function resetHojeState() {
       fetchStatus: "idle",
       fetchProgressLabel: null,
       savedAt: todayEntry.date,
+      updatedAt: todayEntry.date,
       priceByTicker: priceByTickerFromCache,
     };
+    // Ya quedó guardado en el historial: la vista previa suelta (de antes de las 20:00) queda
+    // obsoleta, se limpia para no restaurarla por error si más tarde se borra esta entrada.
+    try { localStorage.removeItem("pnl-hoje-preview"); } catch (_) {}
     return;
   }
 
@@ -812,8 +816,22 @@ function resetHojeState() {
     fetchStatus: "idle",
     fetchProgressLabel: null,
     savedAt: null,
+    updatedAt: null,
     priceByTicker: priceByTickerFromCache,
   };
+
+  // Si hoy todavía no se guardó en el historial (antes de las 20:00), restauramos la última
+  // vista previa calculada este mismo día — así un cálculo hecho a mano o con "Buscar
+  // variación automáticamente" sobrevive a cerrar y volver a abrir la app, en vez de
+  // perderse y mostrar la pantalla vacía "idle" hasta la próxima búsqueda.
+  const preview = loadHojePreview();
+  if (preview) {
+    state.hoje.status = "result";
+    state.hoje.reviewMap = preview.reviewMap || {};
+    state.hoje.fxPctInput = preview.fxPctInput || "0";
+    state.hoje.result = preview.result;
+    state.hoje.updatedAt = preview.updatedAt || null;
+  }
 }
 function loadQuotesCache() {
   let apiKey = "", finnhubKey = "", quotes = {}, logos = {}, fxRateInput = "", quotesUpdatedAt = null, dividendTaxPct = "30";
@@ -1531,13 +1549,15 @@ function renderHojeReviewResult() {
       </div>`;
   } else if (h.status === "result") {
     const r = h.result;
+    const updatedLabel = h.updatedAt ? timeAgoLabel(h.updatedAt) : "";
     footer = `
       <div class="summary">
         <div class="summary-line"><span>Variación por precios</span><span class="${r.priceTotal >= 0 ? "up" : "down"}">${fmtBRL(r.priceTotal)}</span></div>
         <div class="summary-line"><span>Efecto dólar (${fmtPct(r.fxPct)})</span><span class="${r.fxGain >= 0 ? "up" : "down"}">${fmtBRL(r.fxGain)}</span></div>
         <div class="summary-line summary-total"><span>Total estimado</span><span class="${r.total >= 0 ? "up" : "down"}">${fmtBRL(r.total)}</span></div>
       </div>
-      <div class="banner banner-warn">${icon("alert-triangle", 15)} Esto es solo una vista previa — no se guarda en el historial. El historial se actualiza únicamente de forma automática a las ${AUTO_SAVE_HOUR_BRAZIL}:00 hora de Brasil, en días con mercado abierto.</div>
+      ${updatedLabel ? `<p class="muted small" style="margin-top:8px">${icon("history", 13)} ${escapeHtml(updatedLabel)}</p>` : ""}
+      <div class="banner banner-warn">${icon("alert-triangle", 15)} Vista previa — se guarda sola en el historial a las ${AUTO_SAVE_HOUR_BRAZIL}:00 hora de Brasil.</div>
       <div class="row-actions">
         <button class="btn btn-ghost" data-action="discard-result">${icon("x", 15)} Cerrar vista previa</button>
       </div>`;
@@ -1550,7 +1570,7 @@ function renderHojeReviewResult() {
         <div class="summary-line"><span>Efecto dólar (${fmtPct(r.fxPct)})</span><span class="${r.fxGain >= 0 ? "up" : "down"}">${fmtBRL(r.fxGain)}</span></div>
         <div class="summary-line summary-total"><span>Total estimado</span><span class="${r.total >= 0 ? "up" : "down"}">${fmtBRL(r.total)}</span></div>
       </div>
-      <div class="banner banner-ok">${icon("check-circle", 15)} ${escapeHtml(savedLabel)} Esta información se mantiene visible y solo cambia si tocas "Actualizar variación" (eso no modifica el historial; el historial solo se actualiza automáticamente a las ${AUTO_SAVE_HOUR_BRAZIL}:00 hora de Brasil).</div>
+      <div class="banner banner-ok">${icon("check-circle", 15)} ${escapeHtml(savedLabel)}</div>
       <div class="row-actions">
         <button class="btn btn-ghost" data-action="fetch-live-day-change" ${h.fetchStatus === "loading" ? "disabled" : ""}>
           ${icon("refresh", 15, h.fetchStatus === "loading" ? "spin" : "")} ${h.fetchStatus === "loading" ? (h.fetchProgressLabel || "Buscando…") : "Actualizar variación"}
@@ -1715,6 +1735,41 @@ function parsePasted() {
   compute();
 }
 
+function persistHojePreview() {
+  // Persiste la vista previa de "Hoy" (resultado calculado pero todavía no guardado en el
+  // historial, que solo ocurre con el auto-save de las 20:00) para que sobreviva a cerrar y
+  // volver a abrir la app. Antes, un cálculo manual/automático hecho durante el día vivía
+  // solo en memoria (state.hoje) y se perdía apenas se recargaba la página, aunque el
+  // historial de días anteriores sí estuviera sincronizado. Solo se guarda si corresponde al
+  // día de hoy (hora de Brasil) — si cambia el día, se descarta en vez de mostrar algo viejo.
+  const h = state.hoje;
+  try {
+    if (h.result) {
+      localStorage.setItem("pnl-hoje-preview", JSON.stringify({
+        day: brazilTodayYMD(),
+        reviewMap: h.reviewMap,
+        fxPctInput: h.fxPctInput,
+        result: h.result,
+        updatedAt: h.updatedAt,
+      }));
+    } else {
+      localStorage.removeItem("pnl-hoje-preview");
+    }
+  } catch (_) {}
+}
+
+function loadHojePreview() {
+  try {
+    const raw = localStorage.getItem("pnl-hoje-preview");
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed.day !== brazilTodayYMD()) return null; // de un día anterior: no sirve
+    return parsed;
+  } catch (_) {
+    return null;
+  }
+}
+
 function compute() {
   const h = state.hoje;
   const rows = state.portfolio.map((p) => {
@@ -1728,6 +1783,8 @@ function compute() {
   const fxGain = (totalSaldo * fxPct) / 100;
   h.result = { rows, priceTotal, fxPct, fxGain, total: priceTotal + fxGain };
   h.status = "result";
+  h.updatedAt = new Date().toISOString();
+  persistHojePreview();
   render();
 }
 
@@ -1764,6 +1821,7 @@ function saveHistoryAction() {
   }
   persistHistory();
   if (staleCloudId) sbDeleteHistoryId(staleCloudId); // limpia la fila vieja en la nube, fire-and-forget
+  try { localStorage.removeItem("pnl-hoje-preview"); } catch (_) {} // ya quedó guardado en el historial
 
   // Notificación push: avisa en todos los dispositivos que el historial se guardó
   const totalStr = entry.total >= 0 ? `+${fmtBRL(entry.total)}` : fmtBRL(entry.total);
@@ -1775,6 +1833,7 @@ function saveHistoryAction() {
 
   h.status = "saved";
   h.savedAt = nowIso;
+  h.updatedAt = nowIso;
   render();
 }
 
@@ -3769,7 +3828,7 @@ function handleAction(action, el) {
     case "edit-review": state.hoje.status = "review"; render(); break;
     case "cancel-review": resetHojeState(); render(); break;
     case "compute": compute(); break;
-    case "discard-result": resetHojeState(); render(); break;
+    case "discard-result": try { localStorage.removeItem("pnl-hoje-preview"); } catch (_) {} resetHojeState(); render(); break;
     case "new-entry": resetHojeState(); render(); break;
     case "add-row": addRow(); break;
     case "remove-row": removeRow(id); break;
