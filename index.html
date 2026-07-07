@@ -16,40 +16,42 @@
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
 
 :root {
-  --bg-app: #0A0D10;
-  --bg-header-grad: #0F1318;
-  --bg-card: #12161B;
-  --bg-input: #0D1115;
-  --bg-row-alt: #161A20;
-  --border: #1C2128;
-  --border-input: #232932;
-  --text-primary: #ECEFF2;
-  --text-secondary: #C7CCD3;
-  --text-muted: #7A8290;
-  --text-muted2: #ABB2BC;
-  --text-dim: #4A5360;
-  --accent-gold: #E8B339;
-  --up: #1FD8A4;
-  --down: #FF6B6B;
-  --on-accent: #15130A;
+  --bg-app: #05080A;
+  --bg-header-grad: #0A1013;
+  --bg-card: #0D1317;
+  --bg-input: #0A0F12;
+  --bg-row-alt: #101820;
+  --border: #17222A;
+  --border-input: #1E2C36;
+  --text-primary: #E8EDF0;
+  --text-secondary: #B8C2CA;
+  --text-muted: #6E7A82;
+  --text-muted2: #9AA5AC;
+  --text-dim: #3E4A52;
+  --accent-gold: #14D9B4;
+  --accent-gold-dim: #0F8A7A;
+  --up: #14D9B4;
+  --down: #FF6B5C;
+  --on-accent: #04140F;
 }
 
 [data-theme="light"] {
-  --bg-app: #F7F8FA;
+  --bg-app: #F5F7F7;
   --bg-header-grad: #FFFFFF;
   --bg-card: #FFFFFF;
-  --bg-input: #F0F1F3;
-  --bg-row-alt: #EEF0F3;
-  --border: #E2E5E9;
-  --border-input: #D5D9DE;
-  --text-primary: #14181D;
-  --text-secondary: #3A4250;
-  --text-muted: #6B7280;
-  --text-muted2: #4B5563;
-  --text-dim: #9AA1AC;
-  --accent-gold: #9A6B00;
-  --up: #0F9D78;
-  --down: #D92D2D;
+  --bg-input: #EEF2F2;
+  --bg-row-alt: #E9EFEF;
+  --border: #DCE4E4;
+  --border-input: #CBD6D6;
+  --text-primary: #0B1A17;
+  --text-secondary: #3C4E4B;
+  --text-muted: #6B7E7B;
+  --text-muted2: #4B5F5C;
+  --text-dim: #9FB0AD;
+  --accent-gold: #0F8A73;
+  --accent-gold-dim: #0C7362;
+  --up: #0F8A73;
+  --down: #C4432B;
   --on-accent: #FFFFFF;
 }
 
@@ -75,7 +77,20 @@ html, body { margin: 0; padding: 0; background: var(--bg-app); }
 .header-total-label { font-size: 11px; color: var(--text-muted); margin-bottom: 2px; }
 .header-total-value { font-family: 'IBM Plex Mono', monospace; font-size: 20px; font-weight: 600; }
 .header-total-change { display: block; font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; margin-top: 2px; }
-.header-fx-rate { display: block; font-family: 'IBM Plex Mono', monospace; font-size: 11px; margin-top: 3px; opacity: .7; }
+.fx-strip {
+  display: flex; align-items: center; justify-content: space-between;
+  margin: 0 18px 14px; padding: 11px 13px;
+  background: linear-gradient(90deg, rgba(20,217,180,0.08), rgba(20,217,180,0.02));
+  border: 1px solid rgba(20,217,180,0.22);
+  border-radius: 6px;
+  position: relative; overflow: hidden;
+}
+[data-theme="light"] .fx-strip { background: linear-gradient(90deg, rgba(15,138,115,0.07), rgba(15,138,115,0.02)); border-color: rgba(15,138,115,0.22); }
+.fx-strip::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--accent-gold); }
+.fx-label-group { display: flex; flex-direction: column; gap: 2px; padding-left: 8px; }
+.fx-pair-label { font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: var(--text-muted); letter-spacing: 0.1em; }
+.fx-rate { font-family: 'IBM Plex Mono', monospace; font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
+.fx-change { font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; }
 
 .install-pill { background: transparent; border: 1px solid var(--accent-gold); color: var(--accent-gold); font-family: 'Inter', sans-serif; font-size: 11px; font-weight: 600; padding: 7px 11px; border-radius: 20px; display: inline-flex; align-items: center; gap: 5px; cursor: pointer; white-space: nowrap; }
 .install-pill[hidden] { display: none; }
@@ -104,7 +119,7 @@ html, body { margin: 0; padding: 0; background: var(--bg-app); }
 .main { padding: 16px 14px 0; max-width: 720px; margin: 0 auto; }
 .stack { display: flex; flex-direction: column; gap: 14px; }
 
-.card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+.card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
 .card-title-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
 .card-title { font-family: 'Space Grotesk', sans-serif; font-size: 15px; font-weight: 600; margin: 0; }
 
@@ -158,9 +173,25 @@ html, body { margin: 0; padding: 0; background: var(--bg-app); }
 
 .checkbox-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-muted2); margin-top: 12px; cursor: pointer; }
 
+.detail-note { margin-top: 6px; }
+.detail-note summary { cursor: pointer; list-style: none; display: inline-flex; align-items: center; gap: 4px; }
+.detail-note summary::-webkit-details-marker { display: none; }
+.detail-note summary::before { content: "›"; display: inline-block; transition: transform 0.15s ease; font-family: monospace; }
+.detail-note[open] summary::before { transform: rotate(90deg); }
+.detail-note p { margin-top: 6px; }
+
+.collapsible-card { padding: 0; overflow: hidden; }
+.collapsible-card > summary { cursor: pointer; list-style: none; display: flex; justify-content: space-between; align-items: center; padding: 16px; }
+.collapsible-card > summary::-webkit-details-marker { display: none; }
+.collapsible-card > summary .card-title { display: flex; align-items: center; gap: 8px; }
+.collapsible-card .chevron { transition: transform 0.15s ease; color: var(--text-muted); flex-shrink: 0; }
+.collapsible-card[open] > summary .chevron { transform: rotate(180deg); }
+.collapsible-card > .collapsible-body { padding: 0 16px 16px; }
+.collapsible-card > summary:hover .card-title { color: var(--accent-gold); }
+
 .banner { display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; padding: 10px 12px; border-radius: 8px; margin-bottom: 12px; }
-.banner-warn { background: rgba(232, 179, 57, 0.1); color: var(--accent-gold); border: 1px solid rgba(232, 179, 57, 0.25); }
-.banner-ok { background: rgba(31, 216, 164, 0.1); color: var(--up); border: 1px solid rgba(31, 216, 164, 0.25); }
+.banner-warn { background: rgba(232, 179, 57, 0.1); color: #E8B339; border: 1px solid rgba(232, 179, 57, 0.25); }
+.banner-ok { background: rgba(20, 217, 180, 0.1); color: var(--up); border: 1px solid rgba(20, 217, 180, 0.25); }
 .error-list { margin: 0; padding-left: 18px; }
 .error-list li { margin-bottom: 4px; }
 .error-list li:last-child { margin-bottom: 0; }
@@ -176,6 +207,12 @@ html, body { margin: 0; padding: 0; background: var(--bg-app); }
 .breakdown-bar-fill { height: 100%; border-radius: 4px; }
 .breakdown-pct { width: 44px; flex-shrink: 0; text-align: right; font-size: 12px; font-family: 'IBM Plex Mono', monospace; color: var(--text-muted2); }
 .tx-form { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
+.tx-form-details { margin-top: 14px; }
+.tx-form-details summary { cursor: pointer; list-style: none; font-size: 12.5px; color: var(--text-muted2); display: inline-flex; align-items: center; gap: 5px; }
+.tx-form-details summary::-webkit-details-marker { display: none; }
+.tx-form-details summary::before { content: "›"; font-family: monospace; transition: transform 0.15s ease; }
+.tx-form-details[open] summary::before { transform: rotate(90deg); }
+.tx-form-details .tx-form { margin-top: 10px; padding-top: 0; border-top: none; }
 .tx-select { width: 100%; text-align: left; }
 .tx-form-row { display: flex; gap: 8px; }
 .tx-form-row .input-cell { flex: 1; min-width: 0; }
@@ -1837,7 +1874,7 @@ function renderDividendsCard() {
       <h2 class="card-title">Dividendos recibidos</h2>
       <span class="muted small">Neto: US$ ${totalNetUsd.toFixed(2)}${anyFx ? ` · R$ ${totalNetBrlKnown.toFixed(2)}` : ""}</span>
     </div>
-    <p class="muted small">Es la plata que ya cobraste en efectivo por tus acciones (ganancia <b>realizada</b>, ya con la retención de EE. UU. aplicada) — no depende de si todavía tenés esas acciones o no. Es distinto de "Ganancia/pérdida no realizada" (que es sobre el precio de lo que tenés hoy) y se cuenta aparte en el "Rendimiento total" del Histórico.</p>
+    <p class="muted small">Dinero ya cobrado en efectivo (ganancia realizada, neta de retención EE. UU.).</p>
     <p class="muted small">Bruto acumulado: US$ ${totalGrossUsd.toFixed(2)} · Retención EE. UU. aplicada: −US$ ${(totalGrossUsd - totalNetUsd).toFixed(2)}</p>
     <div class="tx-form-row">
       <span class="muted small" style="align-self:center">Retención EE. UU. (%)</span>
@@ -1855,7 +1892,7 @@ function renderDividendsCard() {
                  </div>`
                : ""
            }`
-        : `<p class="muted small">Todavía no hay dividendos registrados. Impórtalos en el CSV (type=dividend) o agrégalos en "Precio de compra" → tipo "Dividendo".</p>`
+        : `<p class="muted small">Sin dividendos aún. Importalos por CSV o agregalos abajo.</p>`
     }
     ${
       p.dividendCheckError
@@ -1964,8 +2001,8 @@ function renderUnrealized(rows) {
       <h2 class="card-title">Ganancia/pérdida no realizada</h2>
       <span class="${totalGainUsd >= 0 ? "up" : "down"} small"><b>${totalGainBrl !== null ? fmtBRL(totalGainBrl) : `US$ ${totalGainUsd.toFixed(2)}`} (${fmtPct(totalPctBrl)})</b></span>
     </div>
-    <p class="muted small">Responde: "si vendiera HOY todo lo que tengo, ¿cuánto ganaría o perdería?". Solo considera el precio de las acciones que <b>todavía tenés</b> — no incluye lo que ya vendiste ni los dividendos cobrados (eso vive en "Rendimiento total", en el Histórico, para no contar nada dos veces).</p>
-    <p class="muted small">Compara el precio promedio de compra con el precio actual de cada activo, en dólares${fx ? ". La ganancia/pérdida en reales se separa en el efecto del precio (el % siempre corresponde a comparar Compra vs Actual en dólares) y el efecto del cambio desde el día de cada compra, para que ambos números sean consistentes entre sí." : ". Configura el cambio USD/BRL arriba para verlo también en reales."}</p>
+    <p class="muted small">Si vendieras todo hoy: precio actual vs. precio promedio de compra. No incluye lo ya vendido ni dividendos (eso está en Histórico).</p>
+    <details class="detail-note"><summary class="muted small">¿Cómo se calcula?</summary><p class="muted small">Compara precio de compra vs. actual en US$${fx ? ". En reales se separa el efecto precio del efecto cambio, cada uno medido de forma consistente." : ". Configura el cambio USD/BRL arriba para verlo también en reales."}</p></details>
     ${
       anyApproximated
         ? `<div class="banner banner-warn">${icon("alert-triangle", 15)} Los activos marcados con "≈" todavía no tienen el cambio histórico de alguna compra, así que se aproximan con el cambio de HOY — por eso pueden no coincidir con otras apps (como Kinvo), que sí usan el cambio del día de cada compra. Toca "${backfillLabel}" abajo para corregirlo.</div>`
@@ -2080,16 +2117,18 @@ function renderPosicoes() {
           </button>
         </div>
         <p class="quotes-updated small muted">${p.quotesUpdatedAt ? timeAgoLabel(p.quotesUpdatedAt) : "aún no buscado"}</p>
-        <div class="api-key-row">
-          <input class="input-cell input-apikey" type="password" autocomplete="off" data-bind="finnhubKey" value="${escapeAttr(p.finnhubKey)}" placeholder="Clave de API de Finnhub (precios)">
-          <a class="muted small" href="https://finnhub.io/register" target="_blank" rel="noopener">Crear clave gratis ↗</a>
-        </div>
-        <div class="api-key-row">
-          <input class="input-cell input-apikey" type="password" autocomplete="off" data-bind="apiKey" value="${escapeAttr(p.apiKey)}" placeholder="Clave de API de Twelve Data (cambio)">
-          <a class="muted small" href="https://twelvedata.com/pricing" target="_blank" rel="noopener">Crear clave gratis ↗</a>
-        </div>
-        <p class="upload-hint">El precio (US$) de cada posición se completa automáticamente al actualizar las cotizaciones, pero puedes escribir encima si quieres. Sin precio y cambio, el valor vuelve a ser editable manualmente.</p>
-        <p class="upload-hint">Los precios de las acciones vienen de Finnhub (60 consultas/min gratis) y el cambio USD/BRL de Twelve Data (8/min, pero acá solo se pide ese único símbolo).</p>
+        <details class="detail-note" ${p.finnhubKey || p.apiKey ? "" : "open"}>
+          <summary class="muted small">Claves de API</summary>
+          <div class="api-key-row" style="margin-top:8px">
+            <input class="input-cell input-apikey" type="password" autocomplete="off" data-bind="finnhubKey" value="${escapeAttr(p.finnhubKey)}" placeholder="Clave de API de Finnhub (precios)">
+            <a class="muted small" href="https://finnhub.io/register" target="_blank" rel="noopener">Crear clave gratis ↗</a>
+          </div>
+          <div class="api-key-row">
+            <input class="input-cell input-apikey" type="password" autocomplete="off" data-bind="apiKey" value="${escapeAttr(p.apiKey)}" placeholder="Clave de API de Twelve Data (cambio)">
+            <a class="muted small" href="https://twelvedata.com/pricing" target="_blank" rel="noopener">Crear clave gratis ↗</a>
+          </div>
+          <p class="upload-hint">El precio (US$) se completa solo al actualizar cotizaciones, pero podés escribirlo encima.</p>
+        </details>
       </div>
 
       <div class="card">
@@ -2113,15 +2152,17 @@ function renderPosicoes() {
 
       <div class="card">
         <h2 class="card-title">Precio de compra</h2>
-        <p class="muted small">Importa tu historial de compras/ventas/dividendos (CSV con columnas symbol, date, type, qty, price — formato de TradingView, o de Kinvo si además incluye la columna "fx" con el cambio histórico). En "type" usa buy, sell o dividend; para dividendos, "price" es el monto bruto por acción en US$ antes de la retención de EE. UU.</p>
+        <p class="muted small">Importa tu historial de compras, ventas y dividendos.</p>
+        <details class="detail-note"><summary class="muted small">Formato del CSV</summary><p class="muted small">Columnas symbol, date, type, qty, price (TradingView, o Kinvo si incluye "fx" con el cambio histórico). En "type": buy, sell o dividend; para dividendos, "price" es el bruto por acción en US$ antes de retención.</p></details>
         ${state.posicoes.importPurchasesMessage ? `<div class="banner banner-ok">${icon("check-circle", 15)} ${escapeHtml(state.posicoes.importPurchasesMessage)}</div>` : ""}
         <div class="row-actions">
           <button class="btn btn-ghost" data-action="trigger-import-purchases">${icon("refresh", 15)} Importar historial de compras (CSV)</button>
         </div>
         <input type="file" id="import-purchases-input" accept=".csv,text/csv" hidden>
 
-        <div class="tx-form">
-          <p class="muted small breakdown-subtitle">O agrega una compra, venta o dividendo nuevo</p>
+        <details class="tx-form-details">
+          <summary class="muted small">Agregar una compra, venta o dividendo manualmente</summary>
+          <div class="tx-form">
           ${txForm.error ? `<div class="banner banner-warn">${icon("alert-triangle", 15)} ${escapeHtml(txForm.error)}</div>` : ""}
           <select class="input-cell tx-select" data-bind="txRowId">
             ${rows.map((r) => `<option value="${r.id}" ${txForm.rowId === r.id ? "selected" : ""}>${escapeHtml(r.ticker || "(sin ticker)")} · ${escapeHtml(r.broker || "—")}</option>`).join("")}
@@ -2156,22 +2197,25 @@ function renderPosicoes() {
                   const net = gross * (1 - taxPct / 100);
                   return gross
                     ? `<p class="upload-hint">Bruto: US$ ${gross.toFixed(2)} · Retención EE. UU. (${fmtPct(taxPct)}): −US$ ${(gross - net).toFixed(2)} · <b>Neto: US$ ${net.toFixed(2)}</b></p>`
-                    : `<p class="upload-hint">El dividendo NO cambia la cantidad de acciones de la posición; solo se registra como ingreso. La retención de EE. UU. se aplica sobre el monto bruto (configúrala abajo, en "Dividendos recibidos").</p>`;
+                    : `<p class="upload-hint">No cambia la cantidad de acciones, solo se registra como ingreso. La retención se configura abajo, en "Dividendos recibidos".</p>`;
                 })()
               : ""
           }
           <div class="row-actions">
             <button class="btn btn-primary" data-action="add-transaction">${icon("plus", 15)} Agregar transacción</button>
           </div>
-          <p class="upload-hint">${txForm.type === "dividend" ? "Se guarda como ingreso de dividendo; no cambia la cantidad de acciones." : "Actualiza la cantidad y recalcula el precio promedio de compra de esa posición (método costo promedio). Recuerda tocar \"Guardar posiciones\" después para que quede guardado."}</p>
-        </div>
+          <p class="upload-hint">${txForm.type === "dividend" ? "No cambia la cantidad de acciones." : "Recalcula el precio promedio (costo promedio). Tocá \"Guardar posiciones\" después."}</p>
+          </div>
+        </details>
       </div>
 
       ${renderDividendsCard()}
 
-      <div class="card">
-        <h2 class="card-title">Desdoblamientos de acciones (splits)</h2>
-        <p class="muted small">Cuando un activo hace un desdoblamiento (ej. ARKB hizo un 3-por-1 el 16/06/2025), el precio promedio de compra calculado con tus compras antiguas queda en una escala distinta a la de las acciones actuales, y la ganancia/pérdida no realizada se ve absurdamente alta o baja. Regístralo aquí para corregirlo: se ajustan las transacciones de ese activo anteriores a la fecha y se recalcula el precio promedio.</p>
+      <details class="card collapsible-card" ${state.splits.length ? "" : ""}>
+        <summary><h2 class="card-title">Desdoblamientos de acciones (splits)${icon("chevron-down", 15, "chevron")}</h2></summary>
+        <div class="collapsible-body">
+        <p class="muted small">Ajusta el precio promedio de compra cuando un activo hace un desdoblamiento.</p>
+        <details class="detail-note"><summary class="muted small">¿Por qué es necesario?</summary><p class="muted small">Sin ajustar, las compras antiguas quedan en otra escala y la ganancia/pérdida no realizada se ve absurdamente alta o baja. Esto corrige las transacciones anteriores a la fecha del split.</p></details>
         ${
           state.splits.length
             ? `<div class="table-scroll"><table class="table">
@@ -2203,11 +2247,12 @@ function renderPosicoes() {
           <button class="btn btn-ghost btn-sm" data-action="dedupe-splits" title="Por si una importación anterior dejó una versión sin ajustar de alguna compra junto a la ya corregida">${icon("trash", 13)} Quitar duplicados de un desdoblamiento</button>
           <button class="btn btn-primary btn-sm" data-action="add-split">${icon("plus", 13)} Aplicar desdoblamiento</button>
         </div>
-      </div>
+        </div>
 
-      <div class="card">
-        <h2 class="card-title">Sincronización en la nube</h2>
-        <p class="muted small">Tu cartera se sincroniza automáticamente con Supabase cada vez que guardás algo — historial, posiciones, transacciones, splits. Al abrir la app en cualquier dispositivo, se descarga lo nuevo automáticamente.</p>
+      <details class="card collapsible-card">
+        <summary><h2 class="card-title">Sincronización en la nube${icon("chevron-down", 15, "chevron")}</h2></summary>
+        <div class="collapsible-body">
+        <p class="muted small">Se sincroniza sola con la nube cada vez que guardás algo.</p>
         <div class="sync-status-row">
           ${icon("cloud", 15, "up")} <span class="small up">Conectado a Supabase · São Paulo</span>
         </div>
@@ -2216,17 +2261,18 @@ function renderPosicoes() {
           <button class="btn btn-ghost btn-sm" data-action="sync-pull">${icon("download", 13)} Bajar desde la nube</button>
           <button class="btn btn-ghost btn-sm" data-action="enable-notifications">${icon("bell", 13)} ${typeof Notification !== "undefined" && Notification.permission === "granted" ? "Notificaciones ✓" : "Activar notificaciones"}</button>
         </div>
-        <p class="upload-hint">Usa "Subir todo" la primera vez en un dispositivo nuevo para que empiece con todos tus datos. "Bajar desde la nube" fuerza una sincronización manual si algo no llegó.</p>
+        <p class="upload-hint">"Subir todo" siembra un dispositivo nuevo. "Bajar" fuerza una sync manual.</p>
         <div class="card" style="margin-top:12px;background:var(--bg-app)">
           <h2 class="card-title" style="font-size:13px">Copia de seguridad local</h2>
-          <p class="muted small">Exporta un archivo JSON como respaldo adicional.</p>
+          <p class="muted small">Respaldo manual en JSON.</p>
           <div class="row-actions">
             <button class="btn btn-ghost btn-sm" data-action="export-backup">${icon("download", 13)} Exportar datos</button>
             <button class="btn btn-ghost btn-sm" data-action="trigger-import-backup">${icon("refresh", 13)} Importar datos</button>
           </div>
           <input type="file" id="import-backup-input" accept="application/json" hidden>
         </div>
-      </div>
+        </div>
+      </details>
     </div>`;
 }
 
@@ -2302,7 +2348,7 @@ function renderHistorico() {
     return `
       <div class="card empty-state">
         <p>Todavía no hay resultados guardados.</p>
-        <p class="muted small">Calcula el resultado de hoy en la pestaña "Hoy" y guárdalo para empezar el historial, importa los últimos días reales, o prueba la app con datos ficticios.</p>
+        <p class="muted small">Guardá el resultado de hoy, o importá tu historial real.</p>
         ${importBanner}
         ${importDateRangeHtml}
         <button class="btn btn-primary" style="margin-top:14px" data-action="import-real-history" ${hs.importStatus === "loading" ? "disabled" : ""}>
@@ -2534,7 +2580,8 @@ function renderHistorico() {
     ? `<div class="card total-return-card">
         <span class="muted small">Rendimiento total desde ${firstDate}</span>
         <span class="total-return-value ${cum >= 0 ? "up" : "down"}">${cum >= 0 ? "+" : ""}${fmtBRL(cum)} (${fmtPct(totalReturnPct)})</span>
-        <p class="muted small" style="margin-top:2px">Responde: "¿cómo le fue a mi plata desde que empecé a invertir?". Encadena la variación de cada día (precio + cambio + dividendos cobrados ese día) con el método TWR (retorno ponderado en el tiempo), así no se distorsiona si metiste o sacaste plata en el medio. A diferencia de "Ganancia/pérdida no realizada" (en Posiciones, que solo mira el precio de lo que tenés HOY), acá también se cuenta la ganancia o pérdida de las acciones que ya vendiste en el camino, y los dividendos cobrados.</p>
+        <p class="muted small" style="margin-top:2px">Rentabilidad acumulada desde que empezaste a invertir, incluye lo ya vendido y los dividendos.</p>
+        <details class="detail-note"><summary class="muted small">¿Cómo se calcula?</summary><p class="muted small">Encadena la variación diaria (precio + cambio + dividendos) con el método TWR, así no se distorsiona si metiste o sacaste plata en el medio.</p></details>
         <div class="toolbar-row" style="justify-content:flex-start;margin-top:8px">
           <button class="btn btn-ghost btn-sm" data-action="compare-spx" ${hs.spxStatus === "loading" ? "disabled" : ""}>${icon("refresh", 13, hs.spxStatus === "loading" ? "spin" : "")} ${spxLabel}</button>
           <button class="btn btn-ghost btn-sm" data-action="compare-cdi" ${hs.cdiStatus === "loading" ? "disabled" : ""}>${icon("refresh", 13, hs.cdiStatus === "loading" ? "spin" : "")} ${cdiLabel}</button>
@@ -3579,7 +3626,7 @@ function render() {
           <h2 style="font-size:16px;">Algo salió mal al mostrar la app</h2>
           <p style="font-size:13px;color:#ABB2BC;line-height:1.5;">Hubo un error al procesar los datos guardados. Podés intentar recargar la página, o limpiar el historial local guardado en este dispositivo (no borra nada de la nube — al recargar se vuelve a descargar desde Supabase).</p>
           <p style="font-size:11px;color:#7A8290;font-family:monospace;">${escapeHtml(String(err?.message || err))}</p>
-          <button onclick="localStorage.removeItem('pnl-history'); location.reload();" style="margin-top:12px;padding:10px 16px;background:#E8B339;color:#15130A;border:none;border-radius:8px;font-weight:600;cursor:pointer;">Limpiar historial local y recargar</button>
+          <button onclick="localStorage.removeItem('pnl-history'); location.reload();" style="margin-top:12px;padding:10px 16px;background:#14D9B4;color:#04140F;border:none;border-radius:8px;font-weight:600;cursor:pointer;">Limpiar historial local y recargar</button>
         </div>`;
     }
   }
@@ -3608,7 +3655,16 @@ function renderInner() {
   // (número grande) del header en todas las pestañas, no solo después de guardarse.
   const dayChangeSource = isTodayEntry ? lastEntry : state.hoje && state.hoje.status === "result" ? state.hoje.result : null;
   const fxRate = parseNum(state.posicoes?.fxRateInput);
-  const fxRateHtml = fxRate ? `<span class="header-fx-rate muted small">US$ 1 = R$ ${fxRate.toFixed(4)}</span>` : "";
+  const fxDayPct = dayChangeSource ? dayChangeSource.fxPct : null;
+  const fxStripHtml = fxRate
+    ? `<div class="fx-strip">
+        <div class="fx-label-group">
+          <span class="fx-pair-label">USD / BRL</span>
+          <span class="fx-rate">${fxRate.toFixed(4).replace(".", ",")}</span>
+        </div>
+        ${typeof fxDayPct === "number" ? `<span class="fx-change ${fxDayPct >= 0 ? "up" : "down"}">${fxDayPct >= 0 ? "+" : ""}${fmtPct(fxDayPct)} hoy</span>` : ""}
+      </div>`
+    : "";
   const dayChangeHtml = dayChangeSource
     ? `<span class="header-total-change ${dayChangeSource.total >= 0 ? "up" : "down"}">${dayChangeSource.total >= 0 ? "+" : ""}${fmtBRL(dayChangeSource.total)} (${fmtPct(totalSaldo ? (dayChangeSource.total / totalSaldo) * 100 : 0)})</span>`
     : "";
@@ -3631,10 +3687,10 @@ function renderInner() {
               </div>
               <span class="header-total-value" id="header-total-value">${displayedTotal}</span>
               ${dayChangeHtml}
-              ${fxRateHtml}
             </div>
           </div>
         </div>
+        ${fxStripHtml}
         ${renderTickerTape(state.portfolio, dayChangeSource)}
       </header>
 
