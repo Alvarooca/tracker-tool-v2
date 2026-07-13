@@ -558,10 +558,12 @@ function persistPortfolio(skipCloud = false) {
 function persistHistory() {
   try {
     const sorted = [...state.history].sort((a, b) => new Date(b.date) - new Date(a.date));
-    // Deduplicar por día (YYYY-MM-DD) — quedarse con el más reciente de cada día
+    // Deduplicar por día EN BRASIL (no UTC) — quedarse con el más reciente de cada día. Usar
+    // slice(0,10) del ISO (UTC) acá dejaba sobrevivir dos entradas del mismo día en Brasil
+    // cuando una se guardó después de las 21:00 (que cruza a UTC del día siguiente).
     const byDate = {};
     sorted.forEach((e) => {
-      const day = String(e.date).slice(0, 10);
+      const day = dateToBrazilYMD(e.date);
       if (!byDate[day]) byDate[day] = e;
     });
     const deduped = Object.values(byDate).sort((a, b) => new Date(b.date) - new Date(a.date));
@@ -2503,7 +2505,7 @@ function renderHistorico() {
         const net = gross * (1 - dividendTaxPctForTwr / 100);
         const fxForTx = typeof t.fx === "number" && t.fx > 0 ? t.fx : fxFallbackForTwr;
         if (!fxForTx) return; // sin cambio (ni histórico ni de hoy) no se puede convertir a reales
-        const day = String(t.date).slice(0, 10);
+        const day = dateToBrazilYMD(t.date);
         dividendsByDayBrl[day] = (dividendsByDayBrl[day] || 0) + net * fxForTx;
       });
   }
@@ -2515,7 +2517,7 @@ function renderHistorico() {
   // en orden cronológico) los dividendos pendientes hasta esa fecha. NO llamar más de una vez
   // por registro ni fuera de orden, porque el "carry" de dividendos es estado acumulado.
   const dailyFigures = (h) => {
-    const entryDay = String(h.date).slice(0, 10);
+    const entryDay = dateToBrazilYMD(h.date);
     while (divPointer < dividendDayKeys.length && dividendDayKeys[divPointer] <= entryDay) {
       divCarryBrl += dividendsByDayBrl[dividendDayKeys[divPointer]];
       divPointer++;
@@ -2931,7 +2933,12 @@ async function importRealHistory() {
   Object.values(tickerChangePct).forEach((m) => Object.keys(m).forEach((d) => allDates.add(d)));
   Object.keys(fxChangePct).forEach((d) => allDates.add(d));
 
-  const existingDates = new Set(state.history.map((e) => String(e.date).slice(0, 10)));
+  // Día en BRASIL (no UTC) de cada entrada ya guardada — con slice(0,10) del ISO en UTC, una
+  // entrada guardada después de las 21:00 hora Brasil (que cae en el día siguiente en UTC)
+  // hacía creer que ese día siguiente ya estaba cubierto, salteando la importación real de esa
+  // fecha (esto fue lo que dejó el 9/7 sin importar: la entrada de las 22:32 del 8/7 en Brasil
+  // quedaba registrada como "9/7" en UTC).
+  const existingDates = new Set(state.history.map((e) => dateToBrazilYMD(e.date)));
   const totalSaldo = state.portfolio.reduce((s, p) => s + parseNum(p.saldo), 0);
 
   // Reconstruct how many shares of a ticker were actually held on a given date, from the
@@ -3631,10 +3638,10 @@ async function loadFullHistoryFromCloud() {
     const all = [...(block1 || []), ...(block2 || []), ...(block3 || [])];
     if (!all.length) { state.historico.importStatus = "idle"; state.historico.importProgressLabel = null; render(); return; }
 
-    // Deduplicar por fecha (YYYY-MM-DD) — quedarse con el registro más reciente por día
+    // Deduplicar por día EN BRASIL (no UTC) — quedarse con el registro más reciente por día
     const byDate = {};
     all.forEach((r) => {
-      const day = String(r.date).slice(0, 10);
+      const day = dateToBrazilYMD(r.date);
       if (!byDate[day] || r.date > byDate[day].date) byDate[day] = r;
     });
     const deduped = Object.values(byDate).sort((a, b) => a.date.localeCompare(b.date));
@@ -4350,11 +4357,18 @@ async function syncPullFromCloud() {
       const staleSet = new Set(staleIds);
       const cloudCleaned = cloudMapped.filter((e) => !staleSet.has(e.id));
 
-      // Fusionar local + nube deduplicando por fecha (YYYY-MM-DD), más reciente gana
+      // Fusionar local + nube deduplicando por DÍA EN BRASIL (no UTC), más reciente gana. Usar
+      // slice(0,10) del ISO (que es UTC) acá era el bug real detrás tanto del duplicado del
+      // 8/7 como de la ausencia del 9/7: una entrada guardada después de las 21:00 hora Brasil
+      // cae en el día siguiente en UTC (p. ej. "8/7 22:32 Brasil" = "9/7 01:32 UTC"), así que
+      // dos entradas del MISMO día en Brasil quedaban con distinta clave `day` en UTC y nunca
+      // se fusionaban — y de paso, el filtro de "días ya existentes" en la importación (que
+      // también miraba UTC) creía que el 9/7 ya estaba cubierto cuando en realidad esa entrada
+      // era del 8/7 en Brasil.
       const allEntries = [...state.history, ...cloudCleaned];
       const byDate = {};
       allEntries.forEach((e) => {
-        const day = String(e.date).slice(0, 10);
+        const day = dateToBrazilYMD(e.date);
         if (!byDate[day] || String(e.date) > String(byDate[day].date)) byDate[day] = e;
       });
       const merged = Object.values(byDate).sort((a, b) => new Date(a.date) - new Date(b.date));
