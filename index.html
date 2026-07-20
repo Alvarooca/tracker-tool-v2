@@ -2439,8 +2439,13 @@ async function importRealHistory() {
     let any = false;
     txs.forEach((t) => {
       if (new Date(t.date).getTime() > cutoff) return;
-      any = true;
-      qty += t.type === "buy" ? t.qty : -t.qty;
+      // Solo "buy"/"sell" son transacciones reales de acciones. Filas tipo "dividend" (que
+      // guardan el total de acciones que tenías en ese momento, para calcular el dividendo en
+      // efectivo — no una compra/venta) deben ignorarse acá. Antes cualquier tipo que no fuera
+      // "buy" se restaba como si fuera una venta, lo que arrastraba la cantidad reconstruida a
+      // valores negativos absurdos apenas había alguna fila de dividendo en el historial.
+      if (t.type === "buy") { qty += t.qty; any = true; }
+      else if (t.type === "sell") { qty -= t.qty; any = true; }
     });
     return any ? qty : 0;
   };
