@@ -530,9 +530,14 @@ function persistHistory() {
 //    históricos" en la tarjeta de ganancia/pérdida no realizada). Si falta el cambio
 //    histórico de alguna compra de ese ticker, avgCostBrl queda en null (la app entonces usa
 //    el cambio actual como aproximación, igual que antes, en vez de mezclar datos parciales).
-function recomputeCostBasisFromTransactions(ticker) {
+// Si se pasa "broker", solo se consideran las transacciones de ESA corretora (permite tener
+// costos promedio independientes por corretora cuando el CSV trae esa columna). Si se omite
+// (undefined/null), se agregan TODAS las transacciones del ticker sin importar la corretora —
+// el comportamiento de siempre, usado cuando no hay información de corretora disponible.
+function recomputeCostBasisFromTransactions(ticker, broker) {
+  const normBroker = (b) => String(b || "").trim().toLowerCase();
   const txs = state.transactions
-    .filter((t) => t.ticker === ticker)
+    .filter((t) => t.ticker === ticker && (broker == null || normBroker(t.broker) === normBroker(broker)))
     .slice()
     .sort((a, b) => new Date(a.date) - new Date(b.date));
   let qty = 0;
@@ -593,13 +598,37 @@ function applyAvgCostToTickerRows(sym, avgCostUsd, avgCostBrl) {
 
 // Igual que applyAvgCostToTickerRows, pero además actualiza la CANTIDAD de acciones a partir del
 // historial de transacciones (compras - ventas). Casos:
-//  - Ticker sin ninguna fila en Posiciones todavía: se crea una fila nueva.
-//  - Una sola fila para ese ticker: se actualiza su cantidad directamente (sin ambigüedad).
-//  - Varias filas del mismo ticker (distintas corretoras): igual que con el costo promedio, no
-//    hay forma de saber cuánto le corresponde a cada una solo con este historial, así que la
-//    cantidad NO se toca (se deja como estaba) y se reporta como "ambigua" para avisarle al
-//    usuario que revise esas filas a mano.
-function applyAvgCostAndQtyToTickerRows(sym, avgCostUsd, avgCostBrl, qty) {
+//  - Si se pasa "broker" (el CSV trae esa columna): se busca la fila de Posiciones que tenga
+//    exactamente ese ticker + esa corretora (comparación sin importar mayúsculas/espacios). Si
+//    existe, se actualiza esa fila puntual (cantidad y costo promedio calculados SOLO con las
+//    transacciones de esa corretora). Si no existe todavía, se crea una fila nueva con ese
+//    broker. Ya no hay ambigüedad ni siquiera con varias corretoras para el mismo ticker.
+//  - Si NO se pasa broker (el CSV no trae esa columna): comportamiento de siempre —
+//    Ticker sin ninguna fila en Posiciones todavía: se crea una fila nueva.
+//    Una sola fila para ese ticker: se actualiza su cantidad directamente (sin ambigüedad).
+//    Varias filas del mismo ticker (distintas corretoras): no hay forma de saber cuánto le
+//    corresponde a cada una, así que la cantidad NO se toca y se reporta como "ambigua".
+function applyAvgCostAndQtyToTickerRows(sym, avgCostUsd, avgCostBrl, qty, broker) {
+  const normBroker = (b) => String(b || "").trim().toLowerCase();
+  if (broker) {
+    const rowsForTickerBroker = state.portfolio.filter((r) => r.ticker === sym && normBroker(r.broker) === normBroker(broker));
+    if (rowsForTickerBroker.length >= 1) {
+      const targetIds = new Set(rowsForTickerBroker.map((r) => r.id));
+      state.portfolio = state.portfolio.map((row) =>
+        targetIds.has(row.id) ? { ...row, quantity: qty, avgCost: avgCostUsd, avgCostBrl } : row
+      );
+      if (state.posicoes) {
+        state.posicoes.rows = state.posicoes.rows.map((row) =>
+          targetIds.has(row.id) ? { ...row, quantity: qty, avgCost: avgCostUsd, avgCostBrl } : row
+        );
+      }
+      return { created: false, qtyUpdated: true, ambiguous: false };
+    }
+    const newRow = { id: uid(), ticker: sym, broker, quantity: qty, price: "", saldo: 0, avgCost: avgCostUsd, avgCostBrl };
+    state.portfolio = [...state.portfolio, newRow];
+    if (state.posicoes) state.posicoes.rows = [...state.posicoes.rows, { ...newRow }];
+    return { created: true, qtyUpdated: true, ambiguous: false };
+  }
   const rowsForTicker = state.portfolio.filter((r) => r.ticker === sym);
   if (rowsForTicker.length === 0) {
     const newRow = { id: uid(), ticker: sym, broker: "", quantity: qty, price: "", saldo: 0, avgCost: avgCostUsd, avgCostBrl };
@@ -1859,7 +1888,7 @@ function renderPosicoes() {
 
       <div class="card">
         <h2 class="card-title">Precio de compra</h2>
-        <p class="muted small">Importa tu historial de compras/ventas (CSV con columnas symbol, date, type, qty, price — formato de TradingView, o de Kinvo si además incluye la columna "fx" con el cambio histórico; acepta tanto "," como ";" de separador) para actualizar la cantidad y el precio promedio de compra de cada activo — crea la posición si el ticker todavía no está en tu carteira — y ver la ganancia no realizada, ya en reales con el cambio real de cada compra cuando esa columna está disponible.</p>
+        <p class="muted small">Importa tu historial de compras/ventas (CSV con columnas symbol, date, type, qty, price — formato de TradingView, o de Kinvo si además incluye la columna "fx" con el cambio histórico; acepta tanto "," como ";" de separador) para actualizar la cantidad y el precio promedio de compra de cada activo — crea la posición si el ticker todavía no está en tu carteira — y ver la ganancia no realizada, ya en reales con el cambio real de cada compra cuando esa columna está disponible. Si agregás una columna opcional "broker" (o "institution") con el nombre de la corretora de cada operación, la app actualiza la fila exacta de esa corretora en vez de solo el precio promedio cuando el mismo ticker está repartido en más de una.</p>
         ${state.posicoes.importPurchasesMessage ? `<div class="banner banner-ok">${icon("check-circle", 15)} ${escapeHtml(state.posicoes.importPurchasesMessage)}</div>` : ""}
         <div class="row-actions">
           <button class="btn btn-ghost" data-action="trigger-import-purchases">${icon("refresh", 15)} Importar historial de compras (CSV)</button>
@@ -2559,7 +2588,10 @@ function detectCsvDelimiter(headerLine) {
 // da Invalid Date y frena toda la importación. Esta función interpreta explícitamente
 // DD/MM/AAAA o DD-MM-AAAA (el formato que exportan TradingView/Kinvo), y si no matchea ese
 // patrón cae de vuelta a dejar que el navegador lo intente (para no romper otros formatos como
-// ISO "AAAA-MM-DD"). Se ancla al mediodía UTC para no perder un día por husos horarios.
+// ISO "AAAA-MM-DD"). Se ancla a MEDIANOCHE UTC (no mediodía) a propósito: así el string ISO
+// resultante coincide exactamente con el que ya tenían guardado los registros de una
+// importación anterior, y la detección de duplicados (que compara el string de fecha completo)
+// los reconoce como la misma transacción en vez de agregarlos de nuevo.
 function parseFlexibleDate(raw) {
   const s = String(raw || "").trim();
   if (!s) return null;
@@ -2569,7 +2601,7 @@ function parseFlexibleDate(raw) {
     const month = parseInt(m[2], 10);
     const year = parseInt(m[3], 10);
     if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
-      const d = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+      const d = new Date(Date.UTC(year, month - 1, day));
       if (!isNaN(d.getTime())) return d;
     }
   }
@@ -2705,7 +2737,7 @@ function addTransaction() {
     p.rows = [...p.rows, newRow];
     p.dirty = true;
     f.rowId = newRow.id;
-    state.transactions.push({ id: uid(), source: "manual", ticker, date: new Date(`${f.date}T12:00:00`).toISOString(), type: f.type, qty, price, fx: fxForTx });
+    state.transactions.push({ id: uid(), source: "manual", ticker, broker: newRow.broker || "", date: new Date(`${f.date}T12:00:00`).toISOString(), type: f.type, qty, price, fx: fxForTx });
   } else {
     const row = p.rows.find((r) => r.id === f.rowId);
     if (!row) { f.error = "No encontré esa posición."; render(); return; }
@@ -2718,7 +2750,7 @@ function addTransaction() {
       row.quantity = Math.max(oldQty - qty, 0);
     }
     p.dirty = true;
-    state.transactions.push({ id: uid(), source: "manual", ticker: row.ticker, date: new Date(`${f.date}T12:00:00`).toISOString(), type: f.type, qty, price: price || row.avgCost || 0, fx: fxForTx });
+    state.transactions.push({ id: uid(), source: "manual", ticker: row.ticker, broker: row.broker || "", date: new Date(`${f.date}T12:00:00`).toISOString(), type: f.type, qty, price: price || row.avgCost || 0, fx: fxForTx });
   }
   persistTransactions();
 
@@ -2755,6 +2787,7 @@ function importPurchasesFile(file) {
         qty: header.indexOf("qty"),
         price: header.indexOf("price"),
         fx: header.indexOf("fx"), // opcional: Kinvo exporta esta columna con el cambio USD/BRL de cada operación
+        broker: header.indexOf("broker") !== -1 ? header.indexOf("broker") : header.indexOf("institution"), // opcional: corretora/institución de cada operación
       };
       if (idx.symbol === -1 || idx.type === -1 || idx.qty === -1 || idx.price === -1) {
         throw new Error("Faltan columnas (symbol, type, qty, price)");
@@ -2779,7 +2812,11 @@ function importPurchasesFile(file) {
 
       // Keep a persisted record of every transaction (deduped), so the app remembers how far
       // back your investing history goes — used e.g. to build the year filters in Historial.
-      const txKey = (t) => `${t.ticker}|${t.date}|${t.type}|${t.qty.toFixed(4)}|${t.price.toFixed(4)}`;
+      // La corretora entra en la clave de duplicados: si dos operaciones tienen la misma
+      // fecha/cantidad/precio pero son de corretoras distintas, son transacciones reales
+      // distintas (ej. el mismo aporte en dos cuentas), no un duplicado.
+      const normBroker = (b) => String(b || "").trim().toLowerCase();
+      const txKey = (t) => `${t.ticker}|${t.date}|${t.type}|${t.qty.toFixed(4)}|${t.price.toFixed(4)}|${normBroker(t.broker)}`;
       const existingKeys = new Set(state.transactions.map(txKey));
       let fxBackfilledFromCsv = 0;
       txs.forEach((cols) => {
@@ -2791,12 +2828,13 @@ function importPurchasesFile(file) {
         const dateRaw = cols[idx.date] || "";
         const date = dateRaw ? (parseFlexibleDate(dateRaw) || new Date()).toISOString() : new Date().toISOString();
         const fxFromFile = idx.fx !== -1 ? parseNum(cols[idx.fx]) || null : null;
+        const brokerFromFile = idx.broker !== -1 ? (cols[idx.broker] || "").trim() : "";
         // Si ya se registró un desdoblamiento para este ticker, la fila cruda del CSV (con la
         // cantidad/precio originales, sin ajustar) se ajusta a la MISMA escala que ya tienen
         // las transacciones guardadas — así una reimportación no agrega una versión duplicada
         // y desajustada de una compra que ya estaba correctamente ajustada por el split.
         const { qty: adjQty, price: adjPrice } = applySplitsToRawValue(sym, date, parseQty(cols[idx.qty]), parseNum(cols[idx.price]));
-        const rec = { ticker: sym, date, type, qty: adjQty, price: adjPrice, fx: fxFromFile };
+        const rec = { ticker: sym, date, type, qty: adjQty, price: adjPrice, fx: fxFromFile, broker: brokerFromFile };
         const key = txKey(rec);
         if (!existingKeys.has(key)) {
           existingKeys.add(key);
@@ -2819,26 +2857,38 @@ function importPurchasesFile(file) {
       // correcta, se elimina la cruda ahora.
       const duplicatesRemoved = dedupeSplitDuplicateTransactions();
 
-      // El precio promedio se recalcula a partir de TODO el historial de transacciones ya
-      // persistido (no solo de las filas de este archivo), para que sea correcto incluso si
-      // el CSV importado es parcial o se reimporta más de una vez.
-      const tickersInFile = new Set();
+      // El precio promedio (y ahora la cantidad) se recalcula a partir de TODO el historial de
+      // transacciones ya persistido (no solo de las filas de este archivo), para que sea
+      // correcto incluso si el CSV importado es parcial o se reimporta más de una vez. Si el
+      // archivo trae la columna broker/institution, se procesa por CADA PAR (ticker, corretora)
+      // por separado — así ya no hay ambigüedad cuando el mismo ticker está en más de una
+      // corretora, cada una se actualiza con su propio historial y su propia fila.
+      const hasBrokerCol = idx.broker !== -1;
+      const pairsInFile = new Map(); // key -> { sym, broker }
       txs.forEach((cols) => {
         const rawSym = (cols[idx.symbol] || "").trim();
         const sym = rawSym.includes(":") ? rawSym.split(":").pop() : rawSym;
-        if (sym) tickersInFile.add(sym);
+        if (!sym) return;
+        const broker = hasBrokerCol ? (cols[idx.broker] || "").trim() : "";
+        const key = sym + "\u0000" + broker;
+        if (!pairsInFile.has(key)) pairsInFile.set(key, { sym, broker });
       });
-      state.splits.forEach((s) => tickersInFile.add(s.ticker)); // por si la limpieza afectó un ticker que no estaba en este archivo
+      // por si la limpieza de splits afectó un ticker que no estaba en este archivo
+      state.splits.forEach((s) => {
+        const key = s.ticker + "\u0000";
+        if (!pairsInFile.has(key)) pairsInFile.set(key, { sym: s.ticker, broker: "" });
+      });
 
       let matched = 0;
       let qtyUpdated = 0;
       let created = 0;
       let ambiguous = 0;
-      tickersInFile.forEach((sym) => {
-        const { avgCostUsd, avgCostBrl, qty } = recomputeCostBasisFromTransactions(sym);
+      pairsInFile.forEach(({ sym, broker }) => {
+        const effectiveBroker = hasBrokerCol && broker ? broker : undefined;
+        const { avgCostUsd, avgCostBrl, qty } = recomputeCostBasisFromTransactions(sym, effectiveBroker);
         if (avgCostUsd === null) return;
         matched++;
-        const result = applyAvgCostAndQtyToTickerRows(sym, avgCostUsd, avgCostBrl, qty);
+        const result = applyAvgCostAndQtyToTickerRows(sym, avgCostUsd, avgCostBrl, qty, effectiveBroker);
         if (result.created) created++;
         else if (result.qtyUpdated) qtyUpdated++;
         else if (result.ambiguous) ambiguous++;
@@ -2853,7 +2903,7 @@ function importPurchasesFile(file) {
           (created ? ` (${created} posición(es) nueva(s) creada(s))` : "") +
           `.` +
           (ambiguous
-            ? ` ${ambiguous} activo(s) tienen varias filas (distintas corretoras) y la cantidad no se tocó — revisalas a mano; el precio promedio sí se actualizó en la posición principal.`
+            ? ` ${ambiguous} activo(s) tienen varias filas (distintas corretoras) sin columna "broker" en el archivo, así que la cantidad no se tocó — agregá esa columna al CSV o revisalas a mano; el precio promedio sí se actualizó en la posición principal.`
             : "") +
           (fxBackfilledFromCsv ? ` Se completó el cambio histórico (columna "fx") de ${fxBackfilledFromCsv} transacción(es) que ya tenías guardadas.` : "") +
           (duplicatesRemoved ? ` Se eliminaron ${duplicatesRemoved} transacción(es) duplicada(s) (de una versión sin ajustar por un desdoblamiento).` : "")
