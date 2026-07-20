@@ -2553,6 +2553,30 @@ function detectCsvDelimiter(headerLine) {
   return semicolonCount > commaCount ? ";" : ",";
 }
 
+// new Date("7/09/2021") es AMBIGUO: el navegador lo interpreta como MM/DD/AAAA (formato EE.UU.),
+// así que "7/09/2021" se leía como 9 de julio en vez de 7 de septiembre — sin tirar ningún
+// error, solo corrompiendo la fecha en silencio. Y con día > 12 (ej. "16/08/2021") directamente
+// da Invalid Date y frena toda la importación. Esta función interpreta explícitamente
+// DD/MM/AAAA o DD-MM-AAAA (el formato que exportan TradingView/Kinvo), y si no matchea ese
+// patrón cae de vuelta a dejar que el navegador lo intente (para no romper otros formatos como
+// ISO "AAAA-MM-DD"). Se ancla al mediodía UTC para no perder un día por husos horarios.
+function parseFlexibleDate(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return null;
+  const m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  if (m) {
+    const day = parseInt(m[1], 10);
+    const month = parseInt(m[2], 10);
+    const year = parseInt(m[3], 10);
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      const d = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+      if (!isNaN(d.getTime())) return d;
+    }
+  }
+  const fallback = new Date(s);
+  return isNaN(fallback.getTime()) ? null : fallback;
+}
+
 let tickerSearchTimer = null;
 
 function searchTickerDebounced(query) {
@@ -2738,7 +2762,7 @@ function importPurchasesFile(file) {
 
       const txs = lines.slice(1).map((l) => parseCsvLine(l, delimiter)).filter((c) => c.length >= 4);
       // sort chronologically so sells reduce the running average cost correctly, oldest first.
-      txs.sort((a, b) => new Date(a[idx.date]) - new Date(b[idx.date]));
+      txs.sort((a, b) => (parseFlexibleDate(a[idx.date]) || 0) - (parseFlexibleDate(b[idx.date]) || 0));
 
       // Some exports show Qty as a plain decimal (e.g. "80.96"). Others show it as an
       // integer count of THOUSANDTHS of a share, with commas only as thousands grouping
@@ -2765,7 +2789,7 @@ function importPurchasesFile(file) {
         const type = (cols[idx.type] || "").trim().toLowerCase();
         if (type !== "buy" && type !== "sell") return;
         const dateRaw = cols[idx.date] || "";
-        const date = dateRaw ? new Date(dateRaw).toISOString() : new Date().toISOString();
+        const date = dateRaw ? (parseFlexibleDate(dateRaw) || new Date()).toISOString() : new Date().toISOString();
         const fxFromFile = idx.fx !== -1 ? parseNum(cols[idx.fx]) || null : null;
         // Si ya se registró un desdoblamiento para este ticker, la fila cruda del CSV (con la
         // cantidad/precio originales, sin ajustar) se ajusta a la MISMA escala que ya tienen
