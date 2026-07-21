@@ -769,7 +769,7 @@ function resetHojeState() {
   // "Buscar variación automáticamente" / "Actualizar variación" (eso solo refresca la vista,
   // nunca guarda en el historial: el historial solo lo actualiza el proceso automático).
   const todayEntry = state.history.find((e) => dateToBrazilYMD(e.date) === brazilTodayYMD());
-  if (todayEntry) {
+  if (todayEntry?.rows) {
     const reviewMap = {};
     todayEntry.rows.forEach((r) => { reviewMap[r.id] = String(r.changePct); });
     state.hoje = {
@@ -1224,7 +1224,7 @@ async function compareCdi() {
 
 function startEditEntry(id) {
   const entry = state.history.find((h) => h.id === id);
-  if (!entry) return;
+  if (!entry?.rows) return; // entrada "liviana" (sin detalle por activo, cargada para ahorrar memoria) — no se puede editar hasta que se recargue completa
   const map = {};
   entry.rows.forEach((r) => { map[r.id] = String(r.changePct); });
   state.historico.editingId = id;
@@ -1241,7 +1241,7 @@ function cancelEditEntry() {
 function saveEntryEdit() {
   const hs = state.historico;
   const entry = state.history.find((h) => h.id === hs.editingId);
-  if (!entry) return;
+  if (!entry?.rows) return;
   const fxPct = parseNum(hs.editFxInput);
   const totalSaldoAtEntry = entry.rows.reduce((s, r) => s + parseNum(r.saldo), 0);
   entry.rows = entry.rows.map((r) => {
@@ -1406,7 +1406,7 @@ function renderTickerTape(portfolio, lastEntry) {
   const quotes = state.posicoes?.quotes || {};
   const uniqueTickers = [...new Set(portfolio.map((p) => p.ticker))];
   const itemsByTicker = {};
-  if (lastEntry) lastEntry.rows.forEach((r) => { itemsByTicker[r.ticker] = r.changePct; });
+  if (lastEntry?.rows) lastEntry.rows.forEach((r) => { itemsByTicker[r.ticker] = r.changePct; });
   const tapeItems = uniqueTickers.map((t) => ({ ticker: t, pct: itemsByTicker[t] }));
   if (lastEntry) tapeItems.push({ ticker: "USD/BRL", pct: lastEntry.fxPct });
   const doubled = [...tapeItems, ...tapeItems];
@@ -3575,7 +3575,7 @@ function exportCsv() {
     .sort((a, b) => new Date(a.date) - new Date(b.date))
     .forEach((h) => {
       const pctByTicker = {};
-      h.rows.forEach((r) => { pctByTicker[r.ticker] = r.changePct; });
+      (h.rows || []).forEach((r) => { pctByTicker[r.ticker] = r.changePct; });
       const row = [
         fmtFullDate(h.date),
         h.priceTotal.toFixed(2),
