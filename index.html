@@ -75,6 +75,7 @@ html, body { margin: 0; padding: 0; background: var(--bg-app); }
 .header-total-label { font-size: 11px; color: var(--text-muted); margin-bottom: 2px; }
 .header-total-value { font-family: 'IBM Plex Mono', monospace; font-size: 20px; font-weight: 600; }
 .header-total-change { display: block; font-family: 'IBM Plex Mono', monospace; font-size: 12px; font-weight: 600; margin-top: 2px; }
+.header-fx-rate { display: block; font-family: 'IBM Plex Mono', monospace; font-size: 11px; margin-top: 3px; opacity: .7; }
 
 .install-pill { background: transparent; border: 1px solid var(--accent-gold); color: var(--accent-gold); font-family: 'Inter', sans-serif; font-size: 11px; font-weight: 600; padding: 7px 11px; border-radius: 20px; display: inline-flex; align-items: center; gap: 5px; cursor: pointer; white-space: nowrap; }
 .install-pill[hidden] { display: none; }
@@ -93,6 +94,8 @@ html, body { margin: 0; padding: 0; background: var(--bg-app); }
 @keyframes scroll-tape { from { transform: translateX(0); } to { transform: translateX(-50%); } }
 .tape-item { font-family: 'IBM Plex Mono', monospace; font-size: 12px; display: inline-flex; gap: 7px; align-items: center; color: var(--text-secondary); }
 .tape-item b { color: var(--text-primary); font-weight: 600; }
+.tape-price { color: var(--text-secondary); font-size: 11px; opacity: .75; }
+.sync-status-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
 
 .tabbar { display: flex; gap: 4px; padding: 10px 14px 0; }
 .tab { flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; background: transparent; border: none; color: var(--text-muted); font-family: 'Inter', sans-serif; font-size: 13px; font-weight: 500; padding: 10px 8px; border-radius: 8px 8px 0 0; cursor: pointer; border-bottom: 2px solid transparent; }
@@ -501,22 +504,53 @@ function loadState() {
 
 function persistTransactions() {
   try { localStorage.setItem("pnl-transactions", JSON.stringify(state.transactions)); } catch (_) {}
+  sbUpsertTransactions(state.transactions); // fire-and-forget
 }
 
 function persistSplits() {
   try { localStorage.setItem("pnl-splits", JSON.stringify(state.splits)); } catch (_) {}
+  sbUpsertSplits(state.splits || []); // fire-and-forget
 }
 
-function persistPortfolio() {
-  try {
-    localStorage.setItem("pnl-portfolio", JSON.stringify(state.portfolio));
-  } catch (_) {}
+function persistPortfolio(skipCloud = false) {
+  try { localStorage.setItem("pnl-portfolio", JSON.stringify(state.portfolio)); } catch (_) {}
+  if (!skipCloud) sbUpsertPortfolio(state.portfolio); // fire-and-forget
 }
 
 function persistHistory() {
   try {
-    localStorage.setItem("pnl-history", JSON.stringify(state.history));
-  } catch (_) {}
+    const sorted = [...state.history].sort((a, b) => new Date(b.date) - new Date(a.date));
+    // Deduplicar por día (YYYY-MM-DD) — entradas reales ganan sobre day-* del backfill
+    const byDate = {};
+    const isBackfill = (e) => String(e.id).startsWith("day-");
+    sorted.forEach((e) => {
+      const day = String(e.date).slice(0, 10);
+      const existing = byDate[day];
+      if (!existing) { byDate[day] = e; return; }
+      if (!isBackfill(existing) && isBackfill(e)) return; // real gana sobre backfill
+      if (isBackfill(existing) && !isBackfill(e)) { byDate[day] = e; return; }
+      // ambas del mismo tipo: ya está la más reciente (sorted desc)
+    });
+    // No guardar entradas day-* en localStorage — no deben propagarse entre dispositivos
+    const deduped = Object.values(byDate)
+      .filter((e) => !isBackfill(e))
+      .sort((a, b) => new Date(b.date) - new Date(a.date));
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - 90);
+    const recent = deduped.filter((e) => new Date(e.date) >= cutoff);
+    localStorage.setItem("pnl-history", JSON.stringify(recent));
+  } catch (_) {
+    try {
+      const sorted = [...state.history]
+        .filter((e) => !String(e.id).startsWith("day-"))
+        .sort((a, b) => new Date(b.date) - new Date(a.date));
+      const cutoff = new Date();
+      cutoff.setDate(cutoff.getDate() - 30);
+      const recent = sorted.filter((e) => new Date(e.date) >= cutoff);
+      localStorage.setItem("pnl-history", JSON.stringify(recent));
+    } catch (_) {}
+  }
+  sbUpsertHistory(state.history);
 }
 
 // Recalcula el precio promedio de compra de un ticker a partir de TODAS sus transacciones
@@ -566,7 +600,6 @@ function recomputeCostBasisFromTransactions(ticker, broker) {
   return {
     avgCostUsd: qty > 0.0001 ? costUsd / qty : null,
     avgCostBrl: qty > 0.0001 && !missingFx ? costBrl / qty : null,
-    qty,
   };
 }
 
@@ -579,7 +612,23 @@ function recomputeCostBasisFromTransactions(ticker, broker) {
 // aplica solo a la posición DOMINANTE (la que tiene más cantidad, y por lo tanto concentra casi
 // toda la actividad reflejada en las transacciones), dejando las demás posiciones del mismo
 // ticker sin tocar en vez de "contaminarlas" con un número que probablemente no les corresponde.
-function applyAvgCostToTickerRows(sym, avgCostUsd, avgCostBrl) {
+// Si se pasa "broker" (el CSV trae esa columna), se busca la fila que tenga EXACTAMENTE ese
+// ticker + esa corretora (sin importar mayúsculas/espacios) y se actualiza solo esa — ya no hay
+// que adivinar cuál es la posición "dominante". Si no se pasa broker, se mantiene el
+// comportamiento de siempre (posición dominante, la de mayor cantidad).
+function applyAvgCostToTickerRows(sym, avgCostUsd, avgCostBrl, broker) {
+  const normBroker = (b) => String(b || "").trim().toLowerCase();
+  if (broker) {
+    const targetIds = new Set(state.portfolio.filter((r) => r.ticker === sym && normBroker(r.broker) === normBroker(broker)).map((r) => r.id));
+    if (targetIds.size > 0) {
+      state.portfolio = state.portfolio.map((row) => (targetIds.has(row.id) ? { ...row, avgCost: avgCostUsd, avgCostBrl } : row));
+      if (state.posicoes) {
+        state.posicoes.rows = state.posicoes.rows.map((row) => (targetIds.has(row.id) ? { ...row, avgCost: avgCostUsd, avgCostBrl } : row));
+      }
+      return true; // encontrada y actualizada
+    }
+    return false; // no hay fila para ese ticker+corretora todavía (el llamador la crea)
+  }
   const rowsForTicker = state.portfolio.filter((r) => r.ticker === sym);
   const targetId = rowsForTicker.length <= 1 ? null : rowsForTicker.reduce((a, b) => (parseNum(b.quantity) > parseNum(a.quantity) ? b : a)).id;
   state.portfolio = state.portfolio.map((row) => {
@@ -594,64 +643,7 @@ function applyAvgCostToTickerRows(sym, avgCostUsd, avgCostBrl) {
       return { ...row, avgCost: avgCostUsd, avgCostBrl };
     });
   }
-}
-
-// Igual que applyAvgCostToTickerRows, pero además actualiza la CANTIDAD de acciones a partir del
-// historial de transacciones (compras - ventas). Casos:
-//  - Si se pasa "broker" (el CSV trae esa columna): se busca la fila de Posiciones que tenga
-//    exactamente ese ticker + esa corretora (comparación sin importar mayúsculas/espacios). Si
-//    existe, se actualiza esa fila puntual (cantidad y costo promedio calculados SOLO con las
-//    transacciones de esa corretora). Si no existe todavía, se crea una fila nueva con ese
-//    broker. Ya no hay ambigüedad ni siquiera con varias corretoras para el mismo ticker.
-//  - Si NO se pasa broker (el CSV no trae esa columna): comportamiento de siempre —
-//    Ticker sin ninguna fila en Posiciones todavía: se crea una fila nueva.
-//    Una sola fila para ese ticker: se actualiza su cantidad directamente (sin ambigüedad).
-//    Varias filas del mismo ticker (distintas corretoras): no hay forma de saber cuánto le
-//    corresponde a cada una, así que la cantidad NO se toca y se reporta como "ambigua".
-function applyAvgCostAndQtyToTickerRows(sym, avgCostUsd, avgCostBrl, qty, broker) {
-  const normBroker = (b) => String(b || "").trim().toLowerCase();
-  if (broker) {
-    const rowsForTickerBroker = state.portfolio.filter((r) => r.ticker === sym && normBroker(r.broker) === normBroker(broker));
-    if (rowsForTickerBroker.length >= 1) {
-      const targetIds = new Set(rowsForTickerBroker.map((r) => r.id));
-      state.portfolio = state.portfolio.map((row) =>
-        targetIds.has(row.id) ? { ...row, quantity: qty, avgCost: avgCostUsd, avgCostBrl } : row
-      );
-      if (state.posicoes) {
-        state.posicoes.rows = state.posicoes.rows.map((row) =>
-          targetIds.has(row.id) ? { ...row, quantity: qty, avgCost: avgCostUsd, avgCostBrl } : row
-        );
-      }
-      return { created: false, qtyUpdated: true, ambiguous: false };
-    }
-    const newRow = { id: uid(), ticker: sym, broker, quantity: qty, price: "", saldo: 0, avgCost: avgCostUsd, avgCostBrl };
-    state.portfolio = [...state.portfolio, newRow];
-    if (state.posicoes) state.posicoes.rows = [...state.posicoes.rows, { ...newRow }];
-    return { created: true, qtyUpdated: true, ambiguous: false };
-  }
-  const rowsForTicker = state.portfolio.filter((r) => r.ticker === sym);
-  if (rowsForTicker.length === 0) {
-    const newRow = { id: uid(), ticker: sym, broker: "", quantity: qty, price: "", saldo: 0, avgCost: avgCostUsd, avgCostBrl };
-    state.portfolio = [...state.portfolio, newRow];
-    if (state.posicoes) state.posicoes.rows = [...state.posicoes.rows, { ...newRow }];
-    return { created: true, qtyUpdated: true, ambiguous: false };
-  }
-  if (rowsForTicker.length === 1) {
-    const targetId = rowsForTicker[0].id;
-    state.portfolio = state.portfolio.map((row) =>
-      row.id === targetId ? { ...row, quantity: qty, avgCost: avgCostUsd, avgCostBrl } : row
-    );
-    if (state.posicoes) {
-      state.posicoes.rows = state.posicoes.rows.map((row) =>
-        row.id === targetId ? { ...row, quantity: qty, avgCost: avgCostUsd, avgCostBrl } : row
-      );
-    }
-    return { created: false, qtyUpdated: true, ambiguous: false };
-  }
-  // Varias corretoras con el mismo ticker: mantenemos el comportamiento previo (solo costo
-  // promedio en la posición dominante) y avisamos que la cantidad quedó sin tocar.
-  applyAvgCostToTickerRows(sym, avgCostUsd, avgCostBrl);
-  return { created: false, qtyUpdated: false, ambiguous: true };
+  return true;
 }
 
 // Aplica un desdoblamiento (split) de acciones a un ticker: ajusta retroactivamente todas las
@@ -760,6 +752,16 @@ function dedupeSplitDuplicateTransactions() {
 }
 
 function resetHojeState() {
+  // Precargamos priceByTicker desde las cotizaciones ya cacheadas (de una sesión anterior o
+  // de una actualización de precios en la pestaña "Posiciones") para que el precio de cada
+  // activo aparezca en la tabla de variación INMEDIATAMENTE al abrir la app, sin tener que
+  // tocar "Actualizar variación" primero.
+  const cachedQuotes = state.posicoes?.quotes || loadQuotesCache().quotes;
+  const priceByTickerFromCache = {};
+  Object.entries(cachedQuotes).forEach(([sym, price]) => {
+    if (typeof price === "number" && price > 0) priceByTickerFromCache[sym] = { price, prevClose: null };
+  });
+
   // Si hoy (según la hora de Brasil) ya tiene un registro en el historial — guardado
   // automáticamente después de las 20:00 — se muestra esa información directamente en vez de
   // la pantalla "idle". Así la variación por activo se mantiene visible siempre, incluso al
@@ -786,6 +788,7 @@ function resetHojeState() {
       fetchStatus: "idle",
       fetchProgressLabel: null,
       savedAt: todayEntry.date,
+      priceByTicker: priceByTickerFromCache,
     };
     return;
   }
@@ -800,10 +803,11 @@ function resetHojeState() {
     fetchStatus: "idle",
     fetchProgressLabel: null,
     savedAt: null,
+    priceByTicker: priceByTickerFromCache,
   };
 }
 function loadQuotesCache() {
-  let apiKey = "", finnhubKey = "", quotes = {}, logos = {}, fxRateInput = "", quotesUpdatedAt = null;
+  let apiKey = "", finnhubKey = "", quotes = {}, logos = {}, fxRateInput = "", quotesUpdatedAt = null, dividendTaxPct = "30";
   try { apiKey = localStorage.getItem("pnl-twelvedata-key") || ""; } catch (_) {}
   try { finnhubKey = localStorage.getItem("pnl-finnhub-key") || ""; } catch (_) {}
   try { quotes = JSON.parse(localStorage.getItem("pnl-quotes") || "{}"); } catch (_) {}
@@ -813,7 +817,11 @@ function loadQuotesCache() {
     fxRateInput = typeof fx === "number" ? String(fx) : "";
   } catch (_) {}
   try { quotesUpdatedAt = localStorage.getItem("pnl-quotes-updated-at") || null; } catch (_) {}
-  return { apiKey, finnhubKey, quotes, logos, fxRateInput, quotesUpdatedAt };
+  try {
+    const dt = localStorage.getItem("pnl-dividend-tax");
+    if (dt !== null && dt !== "") dividendTaxPct = dt;
+  } catch (_) {}
+  return { apiKey, finnhubKey, quotes, logos, fxRateInput, quotesUpdatedAt, dividendTaxPct };
 }
 
 function persistQuotesCache() {
@@ -825,7 +833,23 @@ function persistQuotesCache() {
     localStorage.setItem("pnl-logos", JSON.stringify(p.logos || {}));
     localStorage.setItem("pnl-fx", JSON.stringify(parseNum(p.fxRateInput) || null));
     if (p.quotesUpdatedAt) localStorage.setItem("pnl-quotes-updated-at", p.quotesUpdatedAt);
+    localStorage.setItem("pnl-dividend-tax", p.dividendTaxPct ?? "30");
   } catch (_) {}
+  // Subir claves y configuración a Supabase para que otros dispositivos las reciban
+  const settings = [
+    { key: "finnhub-key", user_id: SB_USER, value: p.finnhubKey || "" },
+    { key: "twelvedata-key", user_id: SB_USER, value: p.apiKey || "" },
+    { key: "fx", user_id: SB_USER, value: JSON.stringify(parseNum(p.fxRateInput) || null) },
+    { key: "dividend-tax", user_id: SB_USER, value: p.dividendTaxPct ?? "30" },
+  ].filter((s) => s.value && s.value !== "null");
+  if (settings.length) sbRequest("POST", "settings", settings, "?on_conflict=user_id,key");
+}
+
+function persistDividends() {
+  // Los dividendos viven dentro de state.transactions (type: "dividend"), así que se
+  // persisten con la misma función que compras/ventas — esto es solo un alias semántico
+  // usado en los lugares donde el código se refiere específicamente a dividendos.
+  persistTransactions();
 }
 
 function resetPosicoesState() {
@@ -863,6 +887,12 @@ function resetPosicoesState() {
     quotesProgressLabel: null,
     quotesError: null,
     importPurchasesMessage: null,
+    dividendTaxPct: cache.dividendTaxPct,
+    dividendCheckStatus: "idle",
+    dividendCheckError: null,
+    missingDividends: [], // [{ ticker, date, perShare }] — pagos vistos en Finnhub que no están registrados
+    dividendsExpanded: false,
+    advancedExpanded: false,
     txForm: { rowId: rows[0]?.id || "__new__", newTicker: "", newBroker: "", type: "buy", qty: "", price: "", date: todayYMD(), error: null, tickerSearchResults: [], tickerSearchStatus: "idle" },
     splitForm: { ...splitFormDefaults, error: null },
     splitMessage: null,
@@ -968,6 +998,15 @@ async function fetchQuotes() {
   p.quotesError = errors.length ? errors : null;
   p.rows = p.rows.map((r) => ({ ...r, price: typeof newQuotes[r.ticker] === "number" ? newQuotes[r.ticker] : r.price }));
   p.dirty = true;
+  // Sincronizamos también priceByTicker en state.hoje para que la tabla "Variación del día"
+  // muestre el precio actualizado aunque el usuario no haya tocado "Actualizar variación".
+  if (state.hoje) {
+    const pb = { ...state.hoje.priceByTicker };
+    Object.entries(newQuotes).forEach(([sym, price]) => {
+      if (typeof price === "number" && price > 0) pb[sym] = { price, prevClose: pb[sym]?.prevClose ?? null };
+    });
+    state.hoje.priceByTicker = pb;
+  }
   persistQuotesCache();
 
   p.quotesStatus = "idle";
@@ -1073,6 +1112,22 @@ async function backfillHistoricalFx() {
   render();
 }
 
+// Filtra state.history según el filtro de período activo en la pestaña Historial ("all",
+// "month", "year", o un año puntual como "2023"). Se usa tanto para dibujar los gráficos como
+// para que "Comparar con S&P 500"/"Comparar con CDI" comparen contra ESE mismo período en vez
+// de siempre contra el historial completo.
+function getPeriodFilteredHistory(periodFilter) {
+  const sorted = [...state.history].sort((a, b) => new Date(a.date) - new Date(b.date));
+  const currentYear = new Date().getFullYear();
+  const currentMonthKey = todayYMD().slice(0, 7);
+  return sorted.filter((h) => {
+    if (periodFilter === "all") return true;
+    if (periodFilter === "month") return String(h.date).slice(0, 7) === currentMonthKey;
+    if (periodFilter === "year") return new Date(h.date).getFullYear() === currentYear;
+    return String(new Date(h.date).getFullYear()) === periodFilter;
+  });
+}
+
 function resetHistoricoState() {
   const earliestTx = state.transactions.length
     ? state.transactions.reduce((min, t) => (t.date < min ? t.date : min), state.transactions[0].date)
@@ -1090,9 +1145,15 @@ function resetHistoricoState() {
     spxStatus: "idle",
     spxPct: null,
     spxError: null,
+    cdiStatus: "idle",
+    cdiPct: null,
+    cdiError: null,
     periodFilter: "all",
     importFromDate: defaultFrom,
     importToDate: todayYMD(),
+    autoFillNotice: null,
+    recordsExpanded: false,
+    monthlyExpanded: false,
   };
 }
 
@@ -1104,14 +1165,14 @@ async function compareSpx() {
     render();
     return;
   }
-  const sorted = [...state.history].sort((a, b) => new Date(a.date) - new Date(b.date));
-  if (!sorted.length) return;
+  const periodFiltered = getPeriodFilteredHistory(hs.periodFilter);
+  if (!periodFiltered.length) return;
   hs.spxStatus = "loading";
   hs.spxError = null;
   render();
   try {
-    const start = sorted[0].date.slice(0, 10);
-    const end = new Date().toISOString().slice(0, 10);
+    const start = periodFiltered[0].date.slice(0, 10);
+    const end = periodFiltered[periodFiltered.length - 1].date.slice(0, 10);
     const url = `https://api.twelvedata.com/time_series?symbol=SPY&interval=1day&start_date=${start}&end_date=${end}&apikey=${encodeURIComponent(twelveKey)}`;
     const resp = await fetch(url);
     const data = await resp.json();
@@ -1126,6 +1187,38 @@ async function compareSpx() {
     hs.spxError = err.message || "No pude comparar con el S&P 500 (sin conexión).";
   }
   hs.spxStatus = "idle";
+  render();
+}
+
+// MEJORA #4 — Comparación contra el CDI, vía la API gratuita y sin clave del Banco Central
+// (serie 12 = CDI diario, % al día). Algunos navegadores pueden bloquear esta llamada por
+// CORS si el Banco Central no autoriza el origen — en ese caso se avisa.
+async function compareCdi() {
+  const hs = state.historico;
+  const periodFiltered = getPeriodFilteredHistory(hs.periodFilter);
+  if (!periodFiltered.length) return;
+  hs.cdiStatus = "loading";
+  hs.cdiError = null;
+  render();
+  try {
+    const toBcbDate = (ymd) => { const [y, m, d] = ymd.split("-"); return `${d}/${m}/${y}`; };
+    const start = toBcbDate(periodFiltered[0].date.slice(0, 10));
+    const end = toBcbDate(periodFiltered[periodFiltered.length - 1].date.slice(0, 10));
+    const url = `https://api.bcb.gov.br/dados/serie/bcdata.sgs.12/dados?formato=json&dataInicial=${start}&dataFinal=${end}`;
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error("No pude conectarme a la API del Banco Central.");
+    const data = await resp.json();
+    if (!Array.isArray(data) || !data.length) throw new Error("Sin datos del CDI para ese período.");
+    let factor = 1;
+    data.forEach((d) => {
+      const v = parseFloat(String(d.valor).replace(",", "."));
+      if (Number.isFinite(v)) factor *= 1 + v / 100;
+    });
+    hs.cdiPct = (factor - 1) * 100;
+  } catch (err) {
+    hs.cdiError = "No pude buscar el CDI automáticamente (puede ser un bloqueo de CORS del navegador a la API del Banco Central).";
+  }
+  hs.cdiStatus = "idle";
   render();
 }
 
@@ -1215,7 +1308,7 @@ let chartIdCounter = 0;
 
 function buildChart({ type, data, valueKey, labelKey, height = 180, maxLabels = 6 }) {
   const W = 340, H = height;
-  const padR = 10, padT = 14, padB = 24;
+  const padT = 14, padB = 24;
   const values = data.map((d) => d[valueKey]);
   const rawMin = Math.min(0, ...values);
   const rawMax = Math.max(0, ...values);
@@ -1227,6 +1320,16 @@ function buildChart({ type, data, valueKey, labelKey, height = 180, maxLabels = 
   // cortado contra el borde del SVG.
   const longestLabelChars = Math.max(...gridLabels.map((l) => l.length));
   const padL = Math.max(30, 12 + longestLabelChars * 7.2);
+
+  // El margen derecho se calcula según el ancho de la última etiqueta del eje X (la que
+  // siempre se muestra). Esa etiqueta está centrada ("text-anchor: middle") justo sobre el
+  // borde derecho del área interior del gráfico, así que si el margen es un valor fijo chico,
+  // la mitad derecha del texto queda fuera del viewBox y el navegador la recorta. Por eso se
+  // calcula igual que el margen izquierdo, en base al ancho real del texto que se va a mostrar.
+  const skip = Math.max(1, Math.ceil(data.length / maxLabels));
+  const shownLabelLens = data.map((d, i) => (i % skip === 0 || i === data.length - 1 ? String(d[labelKey] ?? "").length : 0));
+  const longestXLabelChars = Math.max(1, ...shownLabelLens);
+  const padR = Math.max(10, (longestXLabelChars * 6.4) / 2 + 4);
 
   const innerW = W - padL - padR;
   const innerH = H - padT - padB;
@@ -1243,7 +1346,6 @@ function buildChart({ type, data, valueKey, labelKey, height = 180, maxLabels = 
     gridLines += `<text class="chart-axis-label" x="${padL - 7}" y="${(gy + 3).toFixed(2)}" text-anchor="end">${fmtK(t)}</text>`;
   });
 
-  const skip = Math.max(1, Math.ceil(data.length / maxLabels));
   let xLabels = "";
   data.forEach((d, i) => {
     if (i % skip === 0 || i === data.length - 1) {
@@ -1300,6 +1402,8 @@ function buildChart({ type, data, valueKey, labelKey, height = 180, maxLabels = 
 
 function renderTickerTape(portfolio, lastEntry) {
   const logos = state.posicoes?.logos || {};
+  const priceByTicker = state.hoje?.priceByTicker || {};
+  const quotes = state.posicoes?.quotes || {};
   const uniqueTickers = [...new Set(portfolio.map((p) => p.ticker))];
   const itemsByTicker = {};
   if (lastEntry) lastEntry.rows.forEach((r) => { itemsByTicker[r.ticker] = r.changePct; });
@@ -1307,12 +1411,17 @@ function renderTickerTape(portfolio, lastEntry) {
   if (lastEntry) tapeItems.push({ ticker: "USD/BRL", pct: lastEntry.fxPct });
   const doubled = [...tapeItems, ...tapeItems];
   const itemsHtml = doubled
-    .map(
-      (it) =>
-        `<span class="tape-item">${avatarHtml(it.ticker, logos[it.ticker], 18)}<b>${escapeHtml(it.ticker)}</b>${
-          typeof it.pct === "number" ? `<span class="${it.pct >= 0 ? "up" : "down"}">${fmtPct(it.pct)}</span>` : `<span class="muted">—</span>`
-        }</span>`
-    )
+    .map((it) => {
+      // Precio: primero lo que vino del último fetch (tiene prevClose), sino el cache de quotes
+      const pd = priceByTicker[it.ticker];
+      const price = pd?.price ?? quotes[it.ticker] ?? null;
+      const priceHtml = (it.ticker !== "USD/BRL" && price)
+        ? `<span class="tape-price">$${price.toFixed(2)}</span>`
+        : "";
+      return `<span class="tape-item">${avatarHtml(it.ticker, logos[it.ticker], 18)}<b>${escapeHtml(it.ticker)}</b>${priceHtml}${
+        typeof it.pct === "number" ? `<span class="${it.pct >= 0 ? "up" : "down"}">${fmtPct(it.pct)}</span>` : `<span class="muted">—</span>`
+      }</span>`;
+    })
     .join("");
   return `<div class="tape"><div class="tape-track">${itemsHtml}</div></div>`;
 }
@@ -1360,13 +1469,17 @@ function renderHojeReviewResult() {
   const rowsHtml = portfolio
     .map((p) => {
       const row = h.result ? h.result.rows.find((r) => r.id === p.id) : null;
+      const priceInfo = h.priceByTicker?.[p.ticker];
+      const priceCell = priceInfo
+        ? `<span class="small muted" style="font-variant-numeric:tabular-nums">US$ ${priceInfo.price.toFixed(2)} <span style="opacity:.6">(${priceInfo.prevClose.toFixed(2)})</span></span>`
+        : "";
       const pctCell =
         h.status === "review"
           ? `<input class="input-cell" inputmode="decimal" data-bind="review" data-id="${p.id}" value="${escapeAttr(h.reviewMap[p.id] ?? "0")}">`
           : `<span class="${row.changePct >= 0 ? "up" : "down"}">${fmtPct(row.changePct)}</span>`;
       const gainCell = showResultColumns ? `<td class="num ${row.gain >= 0 ? "up" : "down"}">${fmtBRL(row.gain)}</td>` : "";
       return `<tr>
-        <td><div class="ticker-cell">${avatarHtml(p.ticker, state.posicoes?.logos?.[p.ticker], 20)}<span><b>${escapeHtml(p.ticker)}</b><span class="muted small"> · ${escapeHtml(p.broker)}</span></span></div></td>
+        <td><div class="ticker-cell">${avatarHtml(p.ticker, state.posicoes?.logos?.[p.ticker], 20)}<span><b>${escapeHtml(p.ticker)}</b><span class="muted small"> · ${escapeHtml(p.broker)}</span>${priceCell ? `<br>${priceCell}` : ""}</span></div></td>
         <td class="num">${pctCell}</td>
         ${gainCell}
       </tr>`;
@@ -1470,7 +1583,7 @@ async function fetchLiveDayChange(opts = {}) {
 
   const tickers = [...new Set(state.portfolio.map((p) => p.ticker).filter(Boolean))];
   const errors = [];
-  const pctByTicker = {};
+  const pctByTicker = {};   // { SYM: { pct, price, prevClose } }
   let fxPct = null;
 
   // Stocks via Finnhub — 60 calls/min on the free plan, so every ticker fetches at once.
@@ -1483,11 +1596,13 @@ async function fetchLiveDayChange(opts = {}) {
           const resp = await fetch(url);
           const data = await resp.json();
           const pct = Number(data?.dp);
-          if (!Number.isFinite(pct) || (Number(data?.c) === 0 && Number(data?.pc) === 0)) {
+          const price = Number(data?.c);
+          const prevClose = Number(data?.pc);
+          if (!Number.isFinite(pct) || (price === 0 && prevClose === 0)) {
             errors.push(`Sin variación para ${sym}.`);
             return;
           }
-          pctByTicker[sym] = pct;
+          pctByTicker[sym] = { pct, price, prevClose };
         } catch (err) {
           errors.push(`No pude buscar ${sym} en Finnhub (sin conexión).`);
         }
@@ -1521,12 +1636,37 @@ async function fetchLiveDayChange(opts = {}) {
   const map = {};
   state.portfolio.forEach((p) => {
     const v = pctByTicker[p.ticker];
-    map[p.id] = typeof v === "number" ? String(v) : "0";
+    map[p.id] = typeof v === "object" ? String(v.pct) : "0";
   });
   h.reviewMap = map;
+  // También guardamos el precio actual y el cierre anterior por ticker para mostrarlo en la tabla
+  h.priceByTicker = {};
+  Object.entries(pctByTicker).forEach(([sym, d]) => { h.priceByTicker[sym] = d; });
+  // Actualizamos el precio en posicoes.rows también (igual que hace fetchQuotes), así el
+  // banner del header y la tabla de posiciones quedan sincronizados con el precio en vivo.
+  if (state.posicoes) {
+    const newQuotes = { ...state.posicoes.quotes };
+    Object.entries(pctByTicker).forEach(([sym, d]) => { if (d.price) newQuotes[sym] = d.price; });
+    state.posicoes.quotes = newQuotes;
+    state.posicoes.rows = state.posicoes.rows.map((r) => {
+      const q = pctByTicker[r.ticker];
+      return q && q.price ? { ...r, price: q.price } : r;
+    });
+    state.posicoes.quotesUpdatedAt = new Date().toISOString();
+    persistQuotesCache();
+  }
   h.fxPctInput = fxPct !== null ? String(fxPct) : "0";
   h.error = errors.length ? errors.join(" ") : null;
   h.fetchStatus = "idle";
+
+  // Notificación push si algún activo varía más del 3% (en cualquier dirección)
+  const bigMovers = Object.entries(pctByTicker)
+    .filter(([, d]) => Math.abs(d.pct) >= 3)
+    .sort((a, b) => Math.abs(b[1].pct) - Math.abs(a[1].pct));
+  if (bigMovers.length) {
+    const lines = bigMovers.map(([sym, d]) => `${sym} ${d.pct >= 0 ? "+" : ""}${d.pct.toFixed(2)}%`).join(" · ");
+    sendPushNotification("⚠️ Movimiento fuerte en tu cartera", lines, "pnl-alert");
+  }
   // Al buscar automáticamente ya se muestra el resultado calculado por activo de inmediato
   // (sin un paso intermedio de revisión manual) — sigue pudiéndose ajustar con el lápiz "Editar valores".
   // Tocar el botón a mano NUNCA guarda en el historial: solo el proceso automático (autoSave) lo hace.
@@ -1581,29 +1721,35 @@ function saveHistoryAction() {
   const h = state.hoje;
   if (!h.result) return;
   const nowIso = new Date().toISOString();
+  const todayBZ = brazilTodayYMD();
+  const fixedId = `day-${todayBZ}`; // ID fijo por fecha — evita duplicados en Supabase
   const entry = {
-    id: uid(),
+    id: fixedId,
     date: nowIso,
     rows: h.result.rows,
     fxPct: h.result.fxPct,
     fxGain: h.result.fxGain,
     priceTotal: h.result.priceTotal,
     total: h.result.total,
+    totalSaldo: h.result.rows.reduce((s, r) => s + (parseNum(r.saldo) || 0), 0),
   };
 
-  // Si ya existe un registro de hoy (hora de Brasil) — por ejemplo el guardado automático
-  // de las 20:00 — se reemplaza en vez de crear un duplicado. Así, tocar de nuevo el botón
-  // "Buscar variación automáticamente"/"Actualizar variación" el mismo día actualiza el
-  // registro existente en lugar de acumular varias entradas para el mismo día.
-  const todayBZ = brazilTodayYMD();
   const existingIdx = state.history.findIndex((e) => dateToBrazilYMD(e.date) === todayBZ);
   if (existingIdx !== -1) {
-    entry.id = state.history[existingIdx].id;
+    entry.id = state.history[existingIdx].id; // preservar ID existente si ya había uno
     state.history = [...state.history.slice(0, existingIdx), entry, ...state.history.slice(existingIdx + 1)];
   } else {
     state.history = [...state.history, entry];
   }
   persistHistory();
+
+  // Notificación push: avisa en todos los dispositivos que el historial se guardó
+  const totalStr = entry.total >= 0 ? `+${fmtBRL(entry.total)}` : fmtBRL(entry.total);
+  sendPushNotification(
+    "P&L Diario — Historial guardado",
+    `Resultado del día: ${totalStr} (precios ${fmtBRL(entry.priceTotal)}, cambio ${fmtBRL(entry.fxGain)})`,
+    "pnl-autosave"
+  );
 
   h.status = "saved";
   h.savedAt = nowIso;
@@ -1645,6 +1791,100 @@ function updateLiveTotal() {
   if (span) span.textContent = fmtBRL(liveTotal);
   const headerSpan = document.getElementById("header-total-value");
   if (headerSpan) headerSpan.textContent = fmtBRL(liveTotal);
+}
+
+// MEJORA #2 — Dividendos. Viven como transacciones tipo "dividend" dentro de
+// state.transactions (igual que buy/sell), con qty = acciones que cobraron el dividendo y
+// price = monto BRUTO por acción en US$ (antes de la retención de EE. UU.). El neto se calcula
+// siempre al mostrarlo, con la tasa de retención configurable abajo (30% por defecto, la
+// retención estándar para no residentes sin tratado fiscal) — así si algún broker retuvo un
+// % distinto, alcanza con ajustar la tasa en vez de editar cada dividendo.
+function renderDividendsCard() {
+  const p = state.posicoes;
+  const dividends = state.transactions.filter((t) => t.type === "dividend").slice().sort((a, b) => new Date(b.date) - new Date(a.date));
+  const taxPct = parseNum(p.dividendTaxPct) || 0;
+  const COLLAPSED_COUNT = 6;
+  const visibleDividends = p.dividendsExpanded ? dividends : dividends.slice(0, COLLAPSED_COUNT);
+
+  let totalGrossUsd = 0, totalNetUsd = 0, totalNetBrlKnown = 0, anyFx = false;
+  // Los totales SIEMPRE se calculan sobre TODOS los dividendos (no solo los visibles) — la
+  // lista se puede acortar para que no ocupe toda la pantalla, pero la suma de arriba nunca
+  // debe cambiar según esté expandida o no.
+  dividends.forEach((t) => {
+    const gross = t.qty * t.price;
+    const net = gross * (1 - taxPct / 100);
+    totalGrossUsd += gross;
+    totalNetUsd += net;
+    const hasFx = typeof t.fx === "number" && t.fx > 0;
+    if (hasFx) { totalNetBrlKnown += net * t.fx; anyFx = true; }
+  });
+  const rowsHtml = visibleDividends
+    .map((t) => {
+      const gross = t.qty * t.price;
+      const net = gross * (1 - taxPct / 100);
+      const hasFx = typeof t.fx === "number" && t.fx > 0;
+      return `<tr>
+        <td><div class="ticker-cell">${avatarHtml(t.ticker, state.posicoes?.logos?.[t.ticker], 20)}<b>${escapeHtml(t.ticker)}</b></div></td>
+        <td class="small">${fmtShortDate(t.date)}</td>
+        <td class="num small">US$ ${net.toFixed(2)}${hasFx ? ` <span class="muted">(R$ ${(net * t.fx).toFixed(2)})</span>` : ""}</td>
+      </tr>`;
+    })
+    .join("");
+
+  const missingHtml = p.missingDividends.length
+    ? `<div class="banner banner-warn">${icon("alert-triangle", 15)}
+        <div>Encontré ${p.missingDividends.length} dividendo(s) pagados que no tienes registrados:
+          <ul class="error-list">
+            ${p.missingDividends
+              .map(
+                (m) =>
+                  `<li>${escapeHtml(m.ticker)} · ${fmtShortDate(m.date)} · US$ ${m.perShare.toFixed(4)}/acción
+                    <button class="btn btn-ghost btn-sm" style="padding:2px 8px;margin-left:6px" data-action="quickadd-dividend" data-ticker="${escapeAttr(m.ticker)}" data-date="${escapeAttr(m.date.slice(0, 10))}" data-price="${m.perShare}">+ Agregar</button>
+                  </li>`
+              )
+              .join("")}
+          </ul>
+        </div>
+      </div>`
+    : "";
+
+  return `<div class="card">
+    <div class="card-title-row">
+      <h2 class="card-title">Dividendos recibidos</h2>
+      <span class="muted small">Neto: US$ ${totalNetUsd.toFixed(2)}${anyFx ? ` · R$ ${totalNetBrlKnown.toFixed(2)}` : ""}</span>
+    </div>
+    <p class="muted small">Es la plata que ya cobraste en efectivo por tus acciones (ganancia <b>realizada</b>, ya con la retención de EE. UU. aplicada) — no depende de si todavía tenés esas acciones o no. Es distinto de "Ganancia/pérdida no realizada" (que es sobre el precio de lo que tenés hoy) y se cuenta aparte en el "Rendimiento total" del Histórico.</p>
+    <p class="muted small">Bruto acumulado: US$ ${totalGrossUsd.toFixed(2)} · Retención EE. UU. aplicada: −US$ ${(totalGrossUsd - totalNetUsd).toFixed(2)}</p>
+    <div class="tx-form-row">
+      <span class="muted small" style="align-self:center">Retención EE. UU. (%)</span>
+      <input class="input-cell" inputmode="decimal" data-bind="dividendTaxPct" value="${escapeAttr(p.dividendTaxPct)}" style="max-width:90px">
+    </div>
+    ${
+      dividends.length
+        ? `<div class="table-scroll"><table class="table"><thead><tr><th>Activo</th><th>Fecha</th><th class="num">Neto</th></tr></thead><tbody>${rowsHtml}</tbody></table></div>
+           ${
+             dividends.length > COLLAPSED_COUNT
+               ? `<div class="row-actions">
+                   <button class="btn btn-ghost btn-sm" data-action="toggle-dividends-expanded">
+                     ${icon(p.dividendsExpanded ? "chevron-up" : "chevron-down", 13)} ${p.dividendsExpanded ? "Mostrar menos" : `Ver los ${dividends.length} dividendos`}
+                   </button>
+                 </div>`
+               : ""
+           }`
+        : `<p class="muted small">Todavía no hay dividendos registrados. Impórtalos en el CSV (type=dividend) o agrégalos en "Precio de compra" → tipo "Dividendo".</p>`
+    }
+    ${
+      p.dividendCheckError
+        ? `<div class="banner banner-warn">${icon("alert-triangle", 15)} ${escapeHtml(p.dividendCheckError)}</div>`
+        : ""
+    }
+    ${missingHtml}
+    <div class="row-actions">
+      <button class="btn btn-ghost btn-sm" data-action="check-missing-dividends" ${p.dividendCheckStatus === "loading" ? "disabled" : ""}>
+        ${icon("refresh", 13, p.dividendCheckStatus === "loading" ? "spin" : "")} ${p.dividendCheckStatus === "loading" ? "Buscando…" : "Buscar dividendos pendientes"}
+      </button>
+    </div>
+  </div>`;
 }
 
 function renderUnrealized(rows) {
@@ -1740,6 +1980,7 @@ function renderUnrealized(rows) {
       <h2 class="card-title">Ganancia/pérdida no realizada</h2>
       <span class="${totalGainUsd >= 0 ? "up" : "down"} small"><b>${totalGainBrl !== null ? fmtBRL(totalGainBrl) : `US$ ${totalGainUsd.toFixed(2)}`} (${fmtPct(totalPctBrl)})</b></span>
     </div>
+    <p class="muted small">Responde: "si vendiera HOY todo lo que tengo, ¿cuánto ganaría o perdería?". Solo considera el precio de las acciones que <b>todavía tenés</b> — no incluye lo que ya vendiste ni los dividendos cobrados (eso vive en "Rendimiento total", en el Histórico, para no contar nada dos veces).</p>
     <p class="muted small">Compara el precio promedio de compra con el precio actual de cada activo, en dólares${fx ? ". La ganancia/pérdida en reales se separa en el efecto del precio (el % siempre corresponde a comparar Compra vs Actual en dólares) y el efecto del cambio desde el día de cada compra, para que ambos números sean consistentes entre sí." : ". Configura el cambio USD/BRL arriba para verlo también en reales."}</p>
     ${
       anyApproximated
@@ -1770,35 +2011,59 @@ function renderBreakdown(rows) {
   const total = rows.reduce((s, r) => s + rowEffectiveValue(r), 0);
   if (!total) return "";
 
-  const bar = (label, value, color) => {
-    const pct = total ? (value / total) * 100 : 0;
-    return `<div class="breakdown-row">
-      <div class="breakdown-label">${escapeHtml(label)}</div>
-      <div class="breakdown-bar-track"><div class="breakdown-bar-fill" style="width:${Math.max(pct, 1).toFixed(1)}%;background:${color}"></div></div>
-      <div class="breakdown-pct">${pct.toFixed(1)}%</div>
-    </div>`;
-  };
-
+  // Agrupar por ticker
   const byTicker = {};
-  rows.forEach((r) => { byTicker[r.ticker || "—"] = (byTicker[r.ticker || "—"] || 0) + rowEffectiveValue(r); });
-  const tickerRows = Object.entries(byTicker)
-    .sort((a, b) => b[1] - a[1])
-    .map(([t, v]) => bar(t, v, avatarColor(t)))
-    .join("");
+  rows.forEach((r) => { byTicker[r.ticker||"—"] = (byTicker[r.ticker||"—"]||0) + rowEffectiveValue(r); });
+  const items = Object.entries(byTicker).sort((a,b)=>b[1]-a[1]).map(([ticker,value])=>({ ticker, value, pct: (value/total)*100 }));
 
-  const byBroker = {};
-  rows.forEach((r) => { byBroker[r.broker || "—"] = (byBroker[r.broker || "—"] || 0) + rowEffectiveValue(r); });
-  const brokerRows = Object.entries(byBroker)
-    .sort((a, b) => b[1] - a[1])
-    .map(([b, v]) => bar(b, v, avatarColor(b)))
-    .join("");
+  // Layout: dos filas. Fila 1 = activos grandes (>10%), Fila 2 = activos chicos (<10%)
+  // Dentro de cada fila, los rectángulos se distribuyen horizontalmente por peso.
+  const BIG = items.filter(i=>i.pct>=8);
+  const SMALL = items.filter(i=>i.pct<8);
+  const W = 100; // porcentaje
+  const H1 = SMALL.length ? 65 : 100; // altura fila 1 en %
+  const H2 = 100 - H1;
+  const GAP = 0.8;
+
+  function rowCells(arr, yPct, hPct) {
+    const rowTotal = arr.reduce((s,i)=>s+i.value,0);
+    let cx = 0;
+    return arr.map(item => {
+      const w = (item.value/rowTotal)*100;
+      const x = cx + GAP/2;
+      const cellW = w - GAP;
+      const y = yPct + GAP/2;
+      const cellH = hPct - GAP;
+      cx += w;
+      const color = avatarColor(item.ticker);
+      const midX = x + cellW/2;
+      const midY = y + cellH/2;
+      // Mostrar label si hay espacio suficiente (aprox >7% ancho y >20% alto)
+      const showLabel = cellW > 8 && cellH > 20;
+      const showPct = cellW > 10 && cellH > 30;
+      return `<g>
+        <rect x="${x.toFixed(2)}%" y="${y.toFixed(2)}%" width="${Math.max(0,cellW).toFixed(2)}%" height="${Math.max(0,cellH).toFixed(2)}%" rx="6" fill="${color}"/>
+        ${showLabel?`<text x="${midX.toFixed(2)}%" y="${(midY-(showPct?4:0)).toFixed(2)}%" text-anchor="middle" dominant-baseline="central" font-family="Inter,sans-serif" font-size="12" font-weight="700" fill="#fff" style="text-shadow:0 1px 3px rgba(0,0,0,.4)">${escapeHtml(item.ticker)}</text>`:""}
+        ${showPct?`<text x="${midX.toFixed(2)}%" y="${(midY+10).toFixed(2)}%" text-anchor="middle" dominant-baseline="central" font-family="Inter,sans-serif" font-size="10" fill="rgba(255,255,255,.75)">${item.pct.toFixed(1)}%</text>`:""}
+      </g>`;
+    }).join("");
+  }
+
+  const cells = rowCells(BIG, 0, H1) + (SMALL.length ? rowCells(SMALL, H1, H2) : "");
+
+  // Lista compacta
+  const listRows = items.map(i=>`<div class="breakdown-row">
+    <div class="breakdown-label" style="display:flex;align-items:center;gap:6px">
+      <span style="width:9px;height:9px;border-radius:2px;background:${avatarColor(i.ticker)};flex-shrink:0;display:inline-block"></span>${escapeHtml(i.ticker)}
+    </div>
+    <div class="breakdown-bar-track"><div class="breakdown-bar-fill" style="width:${Math.max(i.pct,1).toFixed(1)}%;background:${avatarColor(i.ticker)}"></div></div>
+    <div class="breakdown-pct">${i.pct.toFixed(1)}%</div>
+  </div>`).join("");
 
   return `<div class="card">
     <h2 class="card-title">Distribución de la cartera</h2>
-    <p class="muted small breakdown-subtitle">Por activo</p>
-    ${tickerRows}
-    <p class="muted small breakdown-subtitle">Por corretora</p>
-    ${brokerRows}
+    <svg viewBox="0 0 100 100" preserveAspectRatio="none" width="100%" height="160" style="border-radius:10px;overflow:hidden;display:block;margin-bottom:14px">${cells}</svg>
+    ${listRows}
   </div>`;
 }
 
@@ -1856,11 +2121,11 @@ function renderPosicoes() {
         </div>
         <p class="quotes-updated small muted">${p.quotesUpdatedAt ? timeAgoLabel(p.quotesUpdatedAt) : "aún no buscado"}</p>
         <div class="api-key-row">
-          <input class="input-cell input-apikey" data-bind="finnhubKey" value="${escapeAttr(p.finnhubKey)}" placeholder="Clave de API de Finnhub (precios)">
+          <input class="input-cell input-apikey" type="password" autocomplete="off" data-bind="finnhubKey" value="${escapeAttr(p.finnhubKey)}" placeholder="Clave de API de Finnhub (precios)">
           <a class="muted small" href="https://finnhub.io/register" target="_blank" rel="noopener">Crear clave gratis ↗</a>
         </div>
         <div class="api-key-row">
-          <input class="input-cell input-apikey" data-bind="apiKey" value="${escapeAttr(p.apiKey)}" placeholder="Clave de API de Twelve Data (cambio)">
+          <input class="input-cell input-apikey" type="password" autocomplete="off" data-bind="apiKey" value="${escapeAttr(p.apiKey)}" placeholder="Clave de API de Twelve Data (cambio)">
           <a class="muted small" href="https://twelvedata.com/pricing" target="_blank" rel="noopener">Crear clave gratis ↗</a>
         </div>
         <p class="upload-hint">El precio (US$) de cada posición se completa automáticamente al actualizar las cotizaciones, pero puedes escribir encima si quieres. Sin precio y cambio, el valor vuelve a ser editable manualmente.</p>
@@ -1888,7 +2153,7 @@ function renderPosicoes() {
 
       <div class="card">
         <h2 class="card-title">Precio de compra</h2>
-        <p class="muted small">Importa tu historial de compras/ventas (CSV con columnas symbol, date, type, qty, price — formato de TradingView, o de Kinvo si además incluye la columna "fx" con el cambio histórico; acepta tanto "," como ";" de separador) para actualizar la cantidad y el precio promedio de compra de cada activo — crea la posición si el ticker todavía no está en tu carteira — y ver la ganancia no realizada, ya en reales con el cambio real de cada compra cuando esa columna está disponible. Si agregás una columna opcional "broker" (o "institution") con el nombre de la corretora de cada operación, la app actualiza la fila exacta de esa corretora en vez de solo el precio promedio cuando el mismo ticker está repartido en más de una.</p>
+        <p class="muted small">Importa tu historial de compras/ventas/dividendos (CSV con columnas symbol, date, type, qty, price — formato de TradingView, o de Kinvo si además incluye la columna "fx" con el cambio histórico; acepta "," o ";" de separador). En "type" usa buy, sell o dividend; para dividendos, "price" es el monto bruto por acción en US$ antes de la retención de EE. UU. Si agregás una columna opcional "broker" (o "institution") con el nombre de la corretora de cada operación, la app actualiza (o crea) la fila exacta de esa corretora en vez de adivinar cuál es la posición dominante cuando el mismo ticker está repartido en más de una.</p>
         ${state.posicoes.importPurchasesMessage ? `<div class="banner banner-ok">${icon("check-circle", 15)} ${escapeHtml(state.posicoes.importPurchasesMessage)}</div>` : ""}
         <div class="row-actions">
           <button class="btn btn-ghost" data-action="trigger-import-purchases">${icon("refresh", 15)} Importar historial de compras (CSV)</button>
@@ -1896,7 +2161,7 @@ function renderPosicoes() {
         <input type="file" id="import-purchases-input" accept=".csv,text/csv" hidden>
 
         <div class="tx-form">
-          <p class="muted small breakdown-subtitle">O agrega una compra o venta nueva</p>
+          <p class="muted small breakdown-subtitle">O agrega una compra, venta o dividendo nuevo</p>
           ${txForm.error ? `<div class="banner banner-warn">${icon("alert-triangle", 15)} ${escapeHtml(txForm.error)}</div>` : ""}
           <select class="input-cell tx-select" data-bind="txRowId">
             ${rows.map((r) => `<option value="${r.id}" ${txForm.rowId === r.id ? "selected" : ""}>${escapeHtml(r.ticker || "(sin ticker)")} · ${escapeHtml(r.broker || "—")}</option>`).join("")}
@@ -1917,19 +2182,40 @@ function renderPosicoes() {
             <select class="input-cell" data-bind="txType">
               <option value="buy" ${txForm.type === "buy" ? "selected" : ""}>Compra</option>
               <option value="sell" ${txForm.type === "sell" ? "selected" : ""}>Venta</option>
+              <option value="dividend" ${txForm.type === "dividend" ? "selected" : ""}>Dividendo</option>
             </select>
-            <input class="input-cell" inputmode="decimal" data-bind="txQty" placeholder="Cantidad" value="${escapeAttr(txForm.qty)}">
-            <input class="input-cell" inputmode="decimal" data-bind="txPrice" placeholder="Precio US$" value="${escapeAttr(txForm.price)}">
+            <input class="input-cell" inputmode="decimal" data-bind="txQty" placeholder="${txForm.type === "dividend" ? "Acciones" : "Cantidad"}" value="${escapeAttr(txForm.qty)}">
+            <input class="input-cell" inputmode="decimal" data-bind="txPrice" placeholder="${txForm.type === "dividend" ? "US$/acción (bruto)" : "Precio US$"}" value="${escapeAttr(txForm.price)}">
           </div>
           <input class="input-cell tx-date" type="date" data-bind="txDate" value="${escapeAttr(txForm.date)}" style="text-align:left">
+          ${
+            txForm.type === "dividend"
+              ? (() => {
+                  const gross = parseNum(txForm.qty) * parseNum(txForm.price);
+                  const taxPct = parseNum(state.posicoes.dividendTaxPct) || 0;
+                  const net = gross * (1 - taxPct / 100);
+                  return gross
+                    ? `<p class="upload-hint">Bruto: US$ ${gross.toFixed(2)} · Retención EE. UU. (${fmtPct(taxPct)}): −US$ ${(gross - net).toFixed(2)} · <b>Neto: US$ ${net.toFixed(2)}</b></p>`
+                    : `<p class="upload-hint">El dividendo NO cambia la cantidad de acciones de la posición; solo se registra como ingreso. La retención de EE. UU. se aplica sobre el monto bruto (configúrala abajo, en "Dividendos recibidos").</p>`;
+                })()
+              : ""
+          }
           <div class="row-actions">
             <button class="btn btn-primary" data-action="add-transaction">${icon("plus", 15)} Agregar transacción</button>
           </div>
-          <p class="upload-hint">Actualiza la cantidad y recalcula el precio promedio de compra de esa posición (método costo promedio). Recuerda tocar "Guardar posiciones" después para que quede guardado.</p>
+          <p class="upload-hint">${txForm.type === "dividend" ? "Se guarda como ingreso de dividendo; no cambia la cantidad de acciones." : "Actualiza la cantidad y recalcula el precio promedio de compra de esa posición (método costo promedio). Recuerda tocar \"Guardar posiciones\" después para que quede guardado."}</p>
         </div>
       </div>
 
-      <div class="card">
+      ${renderDividendsCard()}
+
+      <div class="card" style="padding:0;overflow:hidden">
+        <button style="width:100%;background:none;border:none;color:var(--text-primary);font-family:inherit;font-size:14px;font-weight:600;padding:16px 20px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;text-align:left" data-action="toggle-advanced">
+          Herramientas avanzadas
+          <span style="color:var(--text-muted);font-size:12px;font-weight:400">${p.advancedExpanded ? "▲ Ocultar" : "▼ Mostrar"}</span>
+        </button>
+      </div>
+      ${p.advancedExpanded ? `<div class="card">
         <h2 class="card-title">Desdoblamientos de acciones (splits)</h2>
         <p class="muted small">Cuando un activo hace un desdoblamiento (ej. ARKB hizo un 3-por-1 el 16/06/2025), el precio promedio de compra calculado con tus compras antiguas queda en una escala distinta a la de las acciones actuales, y la ganancia/pérdida no realizada se ve absurdamente alta o baja. Regístralo aquí para corregirlo: se ajustan las transacciones de ese activo anteriores a la fecha y se recalcula el precio promedio.</p>
         ${
@@ -1966,14 +2252,27 @@ function renderPosicoes() {
       </div>
 
       <div class="card">
-        <h2 class="card-title">Copia de seguridad</h2>
-        <p class="muted small">Descarga un archivo con tus posiciones, historial y claves, para no perderlos si borras los datos del sitio. Lo mismo sirve para pasar todo a otro celular.</p>
-        <div class="row-actions">
-          <button class="btn btn-ghost" data-action="export-backup">${icon("download", 15)} Exportar datos</button>
-          <button class="btn btn-ghost" data-action="trigger-import-backup">${icon("refresh", 15)} Importar datos</button>
+        <h2 class="card-title">Sincronización en la nube</h2>
+        <p class="muted small">Tu cartera se sincroniza automáticamente con Supabase cada vez que guardás algo — historial, posiciones, transacciones, splits. Al abrir la app en cualquier dispositivo, se descarga lo nuevo automáticamente.</p>
+        <div class="sync-status-row">
+          ${icon("cloud", 15, "up")} <span class="small up">Conectado a Supabase · São Paulo</span>
         </div>
-        <input type="file" id="import-backup-input" accept="application/json" hidden>
-      </div>
+        <div class="row-actions" style="margin-top:10px">
+          <button class="btn btn-ghost btn-sm" data-action="sync-push-all">${icon("upload", 13)} Subir todo a la nube</button>
+          <button class="btn btn-ghost btn-sm" data-action="sync-pull">${icon("download", 13)} Bajar desde la nube</button>
+          <button class="btn btn-ghost btn-sm" data-action="enable-notifications">${icon("bell", 13)} ${typeof Notification !== "undefined" && Notification.permission === "granted" ? "Notificaciones ✓" : "Activar notificaciones"}</button>
+        </div>
+        <p class="upload-hint">Usa "Subir todo" la primera vez en un dispositivo nuevo para que empiece con todos tus datos. "Bajar desde la nube" fuerza una sincronización manual si algo no llegó.</p>
+        <div class="card" style="margin-top:12px;background:var(--bg-app)">
+          <h2 class="card-title" style="font-size:13px">Copia de seguridad local</h2>
+          <p class="muted small">Exporta un archivo JSON como respaldo adicional.</p>
+          <div class="row-actions">
+            <button class="btn btn-ghost btn-sm" data-action="export-backup">${icon("download", 13)} Exportar datos</button>
+            <button class="btn btn-ghost btn-sm" data-action="trigger-import-backup">${icon("refresh", 13)} Importar datos</button>
+          </div>
+          <input type="file" id="import-backup-input" accept="application/json" hidden>
+        </div>
+      </div>` : ""}
     </div>`;
 }
 
@@ -2039,6 +2338,8 @@ function renderHistorico() {
     ? `<div class="banner banner-warn">${icon("alert-triangle", 15)} ${
         hs.importError.length > 1 ? `<ul class="error-list">${hs.importError.map((e) => `<li>${escapeHtml(e)}</li>`).join("")}</ul>` : escapeHtml(hs.importError[0])
       }</div>`
+    : hs.autoFillNotice
+    ? `<div class="banner banner-ok">${icon("refresh", 15, "spin")} ${escapeHtml(hs.autoFillNotice)}</div>`
     : hs.importMessage
     ? `<div class="banner banner-ok">${icon("check-circle", 15)} ${escapeHtml(hs.importMessage)}</div>`
     : "";
@@ -2064,14 +2365,7 @@ function renderHistorico() {
   const currentMonthKey = todayYMD().slice(0, 7);
   const pastYears = allYears.filter((y) => y < currentYear);
 
-  const entryInPeriod = (h) => {
-    const f = hs.periodFilter;
-    if (f === "all") return true;
-    if (f === "month") return String(h.date).slice(0, 7) === currentMonthKey;
-    if (f === "year") return new Date(h.date).getFullYear() === currentYear;
-    return String(new Date(h.date).getFullYear()) === f;
-  };
-  const periodFiltered = sorted.filter(entryInPeriod);
+  const periodFiltered = getPeriodFilteredHistory(hs.periodFilter);
 
   const periodLabel = { all: "Todo", month: "este mes", year: "este año" }[hs.periodFilter] || `de ${hs.periodFilter}`;
   const periodPillsHtml = `
@@ -2117,52 +2411,121 @@ function renderHistorico() {
   let chartData;
   let chartMaxLabels = 6;
   let cum = 0;
+  // MEJORA #3 — Rendimiento total acumulado (%), con el método TWR (time-weighted return):
+  // se encadena el retorno DIARIO de cada registro ((gain del día + dividendos cobrados ese
+  // día) ÷ saldo base de ESE día, que ya viene guardado en rows[].saldo de cada entrada del
+  // historial) en vez de dividir la ganancia acumulada en R$ por el saldo actual. Así, a
+  // diferencia de "Ganancia/pérdida no realizada" (que solo mira lo que tenés HOY), este % sí
+  // cuenta lo que ya vendiste en el camino, y no se distorsiona cuando metes más plata a la
+  // cartera o retiras — es el mismo método que usan las plataformas de inversión para mostrar
+  // "tu rentabilidad" de forma comparable contra un índice o el CDI.
+  //
+  // Los dividendos se suman el día en que se cobraron (con la retención de EE. UU. aplicada y
+  // convertidos a reales con el cambio histórico de ESE día). Si un dividendo cae en un día sin
+  // registro diario guardado (fin de semana, feriado, o un hueco en el historial), se acumula y
+  // se suma al primer día CON registro que aparezca después — así nunca se pierde, solo puede
+  // quedar desplazado unos días dentro de la cadena.
+  const dividendTaxPctForTwr = parseNum(state.posicoes.dividendTaxPct) || 0;
+  const fxFallbackForTwr = parseNum(state.posicoes.fxRateInput);
+  const dividendsByDayBrl = {};
+  if (periodFiltered.length) {
+    const periodStartMs = new Date(periodFiltered[0].date).getTime();
+    const periodEndMs = new Date(periodFiltered[periodFiltered.length - 1].date).getTime();
+    state.transactions
+      .filter((t) => t.type === "dividend")
+      .forEach((t) => {
+        const ts = new Date(t.date).getTime();
+        if (!Number.isFinite(ts) || ts < periodStartMs - 86400000 || ts > periodEndMs + 86400000) return; // fuera del período analizado
+        const gross = t.qty * t.price;
+        const net = gross * (1 - dividendTaxPctForTwr / 100);
+        const fxForTx = typeof t.fx === "number" && t.fx > 0 ? t.fx : fxFallbackForTwr;
+        if (!fxForTx) return; // sin cambio (ni histórico ni de hoy) no se puede convertir a reales
+        const day = String(t.date).slice(0, 10);
+        dividendsByDayBrl[day] = (dividendsByDayBrl[day] || 0) + net * fxForTx;
+      });
+  }
+  const dividendDayKeys = Object.keys(dividendsByDayBrl).sort();
+  let divPointer = 0;
+  let divCarryBrl = 0;
+  let twrFactor = 1;
+  // Devuelve { totalWithDiv, ret } para un registro del historial, consumiendo (una sola vez,
+  // en orden cronológico) los dividendos pendientes hasta esa fecha. NO llamar más de una vez
+  // por registro ni fuera de orden, porque el "carry" de dividendos es estado acumulado.
+  const dailyFigures = (h) => {
+    const entryDay = String(h.date).slice(0, 10);
+    while (divPointer < dividendDayKeys.length && dividendDayKeys[divPointer] <= entryDay) {
+      divCarryBrl += dividendsByDayBrl[dividendDayKeys[divPointer]];
+      divPointer++;
+    }
+    const divForThisEntry = divCarryBrl;
+    divCarryBrl = 0;
+    const totalWithDiv = h.total + divForThisEntry;
+    // Usar totalSaldo pre-calculado si está disponible (cuando rows está vacío por carga lite).
+    // totalSaldo = valor total de la cartera al INICIO del día (antes de la variación del día),
+    // que es el denominador correcto para el TWR.
+    const base = h.totalSaldo > 0
+      ? h.totalSaldo
+      : h.rows?.reduce((s, r) => s + (r.saldo || 0), 0) || 0;
+    const ret = base > 0 ? totalWithDiv / base : 0;
+    return { totalWithDiv, ret };
+  };
   if (isYearAggregateView) {
     const byMonth = {};
+    const twrByMonth = {};
     periodFiltered.forEach((h) => {
+      const { totalWithDiv, ret } = dailyFigures(h);
       const key = String(h.date).slice(0, 7); // YYYY-MM
-      byMonth[key] = (byMonth[key] || 0) + h.total;
+      byMonth[key] = (byMonth[key] || 0) + totalWithDiv;
+      twrFactor *= 1 + ret;
+      twrByMonth[key] = (twrFactor - 1) * 100; // se sobreescribe en orden cronológico: queda el último valor del mes
     });
     const monthKeys = Object.keys(byMonth).sort();
     chartData = monthKeys.map((key) => {
       const total = byMonth[key];
       cum += total;
       const m = parseInt(key.slice(5, 7), 10) - 1;
-      return { date: MONTH_NAMES_SHORT[m], total, cumulative: cum };
+      return { date: MONTH_NAMES_SHORT[m], total, cumulative: cum, cumTwrPct: twrByMonth[key] };
     });
     chartMaxLabels = 12; // como máximo 12 meses, entran todos sin saltarse ninguno
   } else if (isMonthView) {
     chartData = periodFiltered.map((h) => {
-      cum += h.total;
-      return { date: String(new Date(h.date).getDate()), total: h.total, cumulative: cum };
+      const { totalWithDiv, ret } = dailyFigures(h);
+      cum += totalWithDiv;
+      twrFactor *= 1 + ret;
+      return { date: String(new Date(h.date).getDate()), total: totalWithDiv, cumulative: cum, cumTwrPct: (twrFactor - 1) * 100 };
     });
     chartMaxLabels = 12; // un mes tiene como máximo ~23 días hábiles; con esto entran casi todos
   } else if (isAllView) {
     const byYear = {};
+    const twrByYear = {};
     periodFiltered.forEach((h) => {
+      const { totalWithDiv, ret } = dailyFigures(h);
       const key = String(h.date).slice(0, 4); // YYYY
-      byYear[key] = (byYear[key] || 0) + h.total;
+      byYear[key] = (byYear[key] || 0) + totalWithDiv;
+      twrFactor *= 1 + ret;
+      twrByYear[key] = (twrFactor - 1) * 100;
     });
     const yearKeys = Object.keys(byYear).sort();
     chartData = yearKeys.map((key) => {
       const total = byYear[key];
       cum += total;
-      return { date: key, total, cumulative: cum };
+      return { date: key, total, cumulative: cum, cumTwrPct: twrByYear[key] };
     });
     chartMaxLabels = 12; // normalmente son pocos años; entran todos sin saltarse ninguno
   } else {
     chartData = periodFiltered.map((h) => {
-      cum += h.total;
-      return { date: fmtShortDate(h.date), total: h.total, cumulative: cum };
+      const { totalWithDiv, ret } = dailyFigures(h);
+      cum += totalWithDiv;
+      twrFactor *= 1 + ret;
+      return { date: fmtShortDate(h.date), total: totalWithDiv, cumulative: cum, cumTwrPct: (twrFactor - 1) * 100 };
     });
   }
 
   const lineSvg = buildChart({ type: "line", data: chartData, valueKey: "cumulative", labelKey: "date", height: 200, maxLabels: chartMaxLabels });
   const barSvg = buildChart({ type: "bar", data: chartData, valueKey: "total", labelKey: "date", height: 160, maxLabels: chartMaxLabels });
+  const twrSvg = buildChart({ type: "line", data: chartData, valueKey: "cumTwrPct", labelKey: "date", height: 180, maxLabels: chartMaxLabels });
 
-  const totalSaldoForReturn = state.portfolio.reduce((s, p) => s + (parseNum(p.saldo) || 0), 0);
-  const baseSaldo = totalSaldoForReturn - cum;
-  const totalReturnPct = baseSaldo > 0 ? (cum / baseSaldo) * 100 : 0;
+  const totalReturnPct = (twrFactor - 1) * 100;
   const firstDate = periodFiltered.length ? fmtFullDate(periodFiltered[0].date) : "";
   const spxLabel = hs.spxStatus === "loading" ? "Comparando…" : "Comparar con S&P 500";
   const spxResultHtml = hs.spxError
@@ -2172,6 +2535,14 @@ function renderHistorico() {
         cum >= 0 === hs.spxPct >= 0 ? (totalReturnPct > hs.spxPct ? "— le vas ganando 🎯" : "— el índice te va ganando") : ""
       }</p>`
     : "";
+  const cdiLabel = hs.cdiStatus === "loading" ? "Comparando…" : "Comparar con CDI";
+  const cdiResultHtml = hs.cdiError
+    ? `<p class="small down" style="margin-top:8px">${escapeHtml(hs.cdiError)}</p>`
+    : hs.cdiPct !== null
+    ? `<p class="small muted" style="margin-top:8px">CDI en el mismo período: <span class="up"><b>${fmtPct(hs.cdiPct)}</b></span> ${
+        totalReturnPct > hs.cdiPct ? "— le vas ganando 🎯" : "— el CDI te va ganando"
+      }</p>`
+    : "";
 
   const monthly = {};
   periodFiltered.forEach((h) => {
@@ -2179,8 +2550,10 @@ function renderHistorico() {
     monthly[key] = (monthly[key] || 0) + h.total;
   });
   const monthNames = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
-  const monthlyRows = Object.entries(monthly)
-    .sort((a, b) => (a[0] < b[0] ? 1 : -1)) // most recent month first
+  const MONTHLY_COLLAPSED_COUNT = 6;
+  const monthlyEntriesSorted = Object.entries(monthly).sort((a, b) => (a[0] < b[0] ? 1 : -1)); // most recent month first
+  const monthlyEntriesVisible = hs.monthlyExpanded ? monthlyEntriesSorted : monthlyEntriesSorted.slice(0, MONTHLY_COLLAPSED_COUNT);
+  const monthlyRows = monthlyEntriesVisible
     .map(([key, total]) => {
       const [y, m] = key.split("-");
       const label = `${monthNames[parseInt(m, 10) - 1]} ${y}`;
@@ -2190,14 +2563,30 @@ function renderHistorico() {
       </div>`;
     })
     .join("");
-  const monthlyHtml = hs.periodFilter !== "month" && Object.keys(monthly).length > 1 ? `<div class="card"><h2 class="card-title">Resumen mensual</h2>${monthlyRows}</div>` : "";
+  const monthlyToggleHtml =
+    monthlyEntriesSorted.length > MONTHLY_COLLAPSED_COUNT
+      ? `<div class="row-actions">
+          <button class="btn btn-ghost btn-sm" data-action="toggle-monthly-expanded">
+            ${icon(hs.monthlyExpanded ? "chevron-up" : "chevron-down", 13)} ${hs.monthlyExpanded ? "Mostrar menos" : `Ver los ${monthlyEntriesSorted.length} meses`}
+          </button>
+        </div>`
+      : "";
+  const monthlyHtml =
+    hs.periodFilter !== "month" && Object.keys(monthly).length > 1
+      ? `<div class="card"><h2 class="card-title">Resumen mensual</h2>${monthlyRows}${monthlyToggleHtml}</div>`
+      : "";
 
   const totalReturnHtml = periodFiltered.length
     ? `<div class="card total-return-card">
         <span class="muted small">Rendimiento total desde ${firstDate}</span>
         <span class="total-return-value ${cum >= 0 ? "up" : "down"}">${cum >= 0 ? "+" : ""}${fmtBRL(cum)} (${fmtPct(totalReturnPct)})</span>
-        <button class="btn btn-ghost btn-sm" style="margin-top:10px;align-self:flex-start" data-action="compare-spx" ${hs.spxStatus === "loading" ? "disabled" : ""}>${icon("refresh", 13, hs.spxStatus === "loading" ? "spin" : "")} ${spxLabel}</button>
+        <p class="muted small" style="margin-top:2px">Responde: "¿cómo le fue a mi plata desde que empecé a invertir?". Encadena la variación de cada día (precio + cambio + dividendos cobrados ese día) con el método TWR (retorno ponderado en el tiempo), así no se distorsiona si metiste o sacaste plata en el medio. A diferencia de "Ganancia/pérdida no realizada" (en Posiciones, que solo mira el precio de lo que tenés HOY), acá también se cuenta la ganancia o pérdida de las acciones que ya vendiste en el camino, y los dividendos cobrados.</p>
+        <div class="toolbar-row" style="justify-content:flex-start;margin-top:8px">
+          <button class="btn btn-ghost btn-sm" data-action="compare-spx" ${hs.spxStatus === "loading" ? "disabled" : ""}>${icon("refresh", 13, hs.spxStatus === "loading" ? "spin" : "")} ${spxLabel}</button>
+          <button class="btn btn-ghost btn-sm" data-action="compare-cdi" ${hs.cdiStatus === "loading" ? "disabled" : ""}>${icon("refresh", 13, hs.cdiStatus === "loading" ? "spin" : "")} ${cdiLabel}</button>
+        </div>
         ${spxResultHtml}
+        ${cdiResultHtml}
       </div>`
     : "";
 
@@ -2229,8 +2618,10 @@ function renderHistorico() {
       </div>`
     : "";
 
-  const rowsHtml = [...periodFiltered]
-    .reverse()
+  const RECORDS_COLLAPSED_COUNT = 10;
+  const periodFilteredReversed = [...periodFiltered].reverse();
+  const recordsVisible = hs.recordsExpanded ? periodFilteredReversed : periodFilteredReversed.slice(0, RECORDS_COLLAPSED_COUNT);
+  const rowsHtml = recordsVisible
     .map(
       (h) => `
       <tr>
@@ -2245,6 +2636,14 @@ function renderHistorico() {
       </tr>`
     )
     .join("");
+  const recordsToggleHtml =
+    periodFilteredReversed.length > RECORDS_COLLAPSED_COUNT
+      ? `<div class="row-actions">
+          <button class="btn btn-ghost btn-sm" data-action="toggle-records-expanded">
+            ${icon(hs.recordsExpanded ? "chevron-up" : "chevron-down", 13)} ${hs.recordsExpanded ? "Mostrar menos" : `Ver los ${periodFilteredReversed.length} registros`}
+          </button>
+        </div>`
+      : "";
 
   return `
     <div class="stack">
@@ -2266,6 +2665,13 @@ function renderHistorico() {
         <button class="btn btn-ghost btn-sm" data-action="clear-history">${icon("trash", 13)} ${hs.confirmClear ? "¿Confirmar borrado?" : "Borrar historial"}</button>
       </div>
       ${totalReturnHtml}
+      <div class="card">
+        <div class="card-title-row">
+          <h2 class="card-title">Rendimiento acumulado (%)</h2>
+          <span class="${totalReturnPct >= 0 ? "up" : "down"} small"><b>${fmtPct(totalReturnPct)}</b></span>
+        </div>
+        <div class="chart-wrap">${twrSvg}</div>
+      </div>
       <div class="card">
         <div class="card-title-row">
           <h2 class="card-title">Patrimonio acumulado</h2>
@@ -2293,6 +2699,7 @@ function renderHistorico() {
           <thead><tr><th>Fecha</th><th class="num">Precios</th><th class="num">Cambio</th><th class="num">Total</th><th></th></tr></thead>
           <tbody>${rowsHtml}</tbody>
         </table></div>
+        ${recordsToggleHtml}
       </div>
     </div>`;
 }
@@ -2302,6 +2709,41 @@ function addDemo() {
   state.history = [...state.history, ...demo].sort((a, b) => new Date(a.date) - new Date(b.date));
   persistHistory();
   render();
+}
+
+// MEJORA #1 — El guardado diario automático (a las 20:00 hora de Brasil) solo funciona si la
+// app está abierta en ese momento. Si un día no se abrió, ese día queda sin registrar y se
+// rompe la reconstrucción "día a día" de la cartera. Esta función corre sola (sin que el
+// usuario toque nada) al abrir la app o al entrar a la pestaña "Historial", y rellena
+// cualquier hueco entre el último día guardado y hoy reutilizando la misma lógica de
+// "Importar histórico real" (datos REALES de Twelve Data, no estimaciones).
+let autoFillInProgress = false;
+async function autoFillHistoryGaps() {
+  if (autoFillInProgress) return;
+  const twelveKey = (state.posicoes?.apiKey || "").trim();
+  if (!twelveKey) return; // sin clave configurada no hay cómo buscar el histórico real
+
+  const sorted = [...state.history].sort((a, b) => new Date(a.date) - new Date(b.date));
+  const lastDate = sorted.length ? dateToBrazilYMD(sorted[sorted.length - 1].date) : null;
+  const earliestTx = state.transactions.length
+    ? state.transactions.reduce((min, t) => (t.date < min ? t.date : min), state.transactions[0].date).slice(0, 10)
+    : null;
+  const fromDate = lastDate ? new Date(new Date(`${lastDate}T12:00:00Z`).getTime() + 86400000).toISOString().slice(0, 10) : earliestTx;
+  if (!fromDate) return; // todavía no hay ni historial ni transacciones: nada que rellenar
+  const toDate = todayYMD();
+  if (new Date(fromDate) > new Date(toDate)) return; // ya está al día, no hay huecos
+
+  if (!state.historico) resetHistoricoState();
+  state.historico.importFromDate = fromDate;
+  state.historico.importToDate = toDate;
+  state.historico.autoFillNotice = `Rellenando automáticamente del ${fmtShortDate(fromDate)} a hoy…`;
+  autoFillInProgress = true;
+  try {
+    await importRealHistory();
+  } finally {
+    autoFillInProgress = false;
+    if (state.historico) state.historico.autoFillNotice = null;
+  }
 }
 
 async function importRealHistory() {
@@ -2439,13 +2881,9 @@ async function importRealHistory() {
     let any = false;
     txs.forEach((t) => {
       if (new Date(t.date).getTime() > cutoff) return;
-      // Solo "buy"/"sell" son transacciones reales de acciones. Filas tipo "dividend" (que
-      // guardan el total de acciones que tenías en ese momento, para calcular el dividendo en
-      // efectivo — no una compra/venta) deben ignorarse acá. Antes cualquier tipo que no fuera
-      // "buy" se restaba como si fuera una venta, lo que arrastraba la cantidad reconstruida a
-      // valores negativos absurdos apenas había alguna fila de dividendo en el historial.
-      if (t.type === "buy") { qty += t.qty; any = true; }
-      else if (t.type === "sell") { qty -= t.qty; any = true; }
+      if (t.type === "dividend") return; // un dividendo no cambia la cantidad de acciones
+      any = true;
+      qty += t.type === "buy" ? t.qty : -t.qty;
     });
     return any ? qty : 0;
   };
@@ -2494,11 +2932,19 @@ async function importRealHistory() {
       const priceTotal = rows.reduce((s, r) => s + r.gain, 0);
       const fxPct = fxChangePct[d] ?? 0;
       const fxGain = ((hadAnyReconstruction ? totalSaldoForDate : totalSaldo) * fxPct) / 100;
-      return { id: `real-${d}`, date: `${d}T12:00:00`, rows, fxPct, fxGain, priceTotal, total: priceTotal + fxGain };
+      return { id: `real-${d}`, date: `${d}T12:00:00`, rows, fxPct, fxGain, priceTotal, total: priceTotal + fxGain, totalSaldo: totalSaldoForDate };
     });
 
   state.history = [...state.history, ...newEntries].sort((a, b) => new Date(a.date) - new Date(b.date));
-  persistHistory();
+
+  // Subir a Supabase el historial completo antes de recortar localStorage
+  await sbUpsertHistory(state.history);
+  fullHistoryLoaded = true; // ya está en memoria y en Supabase, no recargar innecesariamente
+
+  // Solo recortamos lo que se guarda en localStorage (para no llenarlo),
+  // pero state.history en MEMORIA queda completo para que los gráficos
+  // muestren todos los años correctamente.
+  persistHistory(); // internamente solo guarda 90 días en localStorage
 
   h.importStatus = "idle";
   h.importError = errors.length ? errors : null;
@@ -2517,6 +2963,7 @@ function clearHistoryAction() {
     return;
   }
   state.history = [];
+  fullHistoryLoaded = false;
   persistHistory();
   state.historico.confirmClear = false;
   render();
@@ -2555,8 +3002,33 @@ function exportBackup() {
     quotes: cache.quotes,
     logos: cache.logos,
     fxRateInput: cache.fxRateInput,
+    dividendTaxPct: cache.dividendTaxPct,
   };
   downloadBlob(JSON.stringify(backup, null, 2), `pnl-backup-${todayYMD()}.json`, "application/json");
+}
+
+// new Date("7/09/2021") es AMBIGUO: el navegador lo interpreta como MM/DD/AAAA (formato EE.UU.),
+// así que "7/09/2021" se leía como 9 de julio en vez de 7 de septiembre — sin tirar ningún
+// error, solo corrompiendo la fecha en silencio. Y con día > 12 (ej. "16/08/2021") directamente
+// da Invalid Date, lo que revienta el .toISOString() de más abajo y frena toda la importación.
+// Esta función interpreta explícitamente DD/MM/AAAA o DD-MM-AAAA (el formato que exportan
+// TradingView/Kinvo/eTrade/Morgan Stanley), y si no matchea ese patrón cae de vuelta a dejar
+// que el navegador lo intente (para no romper otros formatos como ISO "AAAA-MM-DD").
+function parseFlexibleDate(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return null;
+  const m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  if (m) {
+    const day = parseInt(m[1], 10);
+    const month = parseInt(m[2], 10);
+    const year = parseInt(m[3], 10);
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      const d = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+      if (!isNaN(d.getTime())) return d;
+    }
+  }
+  const fallback = new Date(s);
+  return isNaN(fallback.getTime()) ? null : fallback;
 }
 
 function parseCsvLine(line, delimiter = ",") {
@@ -2575,43 +3047,6 @@ function parseCsvLine(line, delimiter = ",") {
   }
   out.push(cur);
   return out;
-}
-
-// Algunos exports (p. ej. Kinvo, o una planilla armada a mano en un Excel en español/portugués)
-// usan ";" en vez de "," como separador de columnas — típico cuando la configuración regional
-// usa la coma como separador decimal. Se detecta mirando la línea de encabezado: el separador
-// real es el que aparece más veces ahí (fuera de comillas), no simplemente "el que exista".
-function detectCsvDelimiter(headerLine) {
-  const commaCount = (headerLine.match(/,/g) || []).length;
-  const semicolonCount = (headerLine.match(/;/g) || []).length;
-  return semicolonCount > commaCount ? ";" : ",";
-}
-
-// new Date("7/09/2021") es AMBIGUO: el navegador lo interpreta como MM/DD/AAAA (formato EE.UU.),
-// así que "7/09/2021" se leía como 9 de julio en vez de 7 de septiembre — sin tirar ningún
-// error, solo corrompiendo la fecha en silencio. Y con día > 12 (ej. "16/08/2021") directamente
-// da Invalid Date y frena toda la importación. Esta función interpreta explícitamente
-// DD/MM/AAAA o DD-MM-AAAA (el formato que exportan TradingView/Kinvo), y si no matchea ese
-// patrón cae de vuelta a dejar que el navegador lo intente (para no romper otros formatos como
-// ISO "AAAA-MM-DD"). Se ancla a MEDIANOCHE UTC (no mediodía) a propósito: así el string ISO
-// resultante coincide exactamente con el que ya tenían guardado los registros de una
-// importación anterior, y la detección de duplicados (que compara el string de fecha completo)
-// los reconoce como la misma transacción en vez de agregarlos de nuevo.
-function parseFlexibleDate(raw) {
-  const s = String(raw || "").trim();
-  if (!s) return null;
-  const m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
-  if (m) {
-    const day = parseInt(m[1], 10);
-    const month = parseInt(m[2], 10);
-    const year = parseInt(m[3], 10);
-    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
-      const d = new Date(Date.UTC(year, month - 1, day));
-      if (!isNaN(d.getTime())) return d;
-    }
-  }
-  const fallback = new Date(s);
-  return isNaN(fallback.getTime()) ? null : fallback;
 }
 
 let tickerSearchTimer = null;
@@ -2726,7 +3161,7 @@ function addTransaction() {
   f.error = null;
 
   if (!qty || qty <= 0) { f.error = "Ingresa una cantidad válida (mayor a 0)."; render(); return; }
-  if (f.type === "buy" && (!price || price <= 0)) { f.error = "Ingresa un precio válido (mayor a 0)."; render(); return; }
+  if ((f.type === "buy" || f.type === "dividend") && (!price || price <= 0)) { f.error = "Ingresa un precio válido (mayor a 0)."; render(); return; }
 
   // Si la operación es de hoy, el cambio USD/BRL configurado arriba YA ES el cambio histórico
   // correcto para esa fecha — se guarda directo en la transacción. Si es una fecha pasada, se
@@ -2735,6 +3170,7 @@ function addTransaction() {
 
   let ticker;
   if (f.rowId === "__new__") {
+    if (f.type === "dividend") { f.error = "Un dividendo se registra sobre una posición que ya existe. Selecciónala en \"Posición\"."; render(); return; }
     ticker = f.newTicker.trim().toUpperCase();
     if (!ticker) { f.error = "Ingresa el ticker de la nueva posición."; render(); return; }
     if (f.type === "sell") { f.error = "No se puede vender algo que todavía no está en tu carteira. Agrégalo como compra primero."; render(); return; }
@@ -2742,7 +3178,7 @@ function addTransaction() {
     p.rows = [...p.rows, newRow];
     p.dirty = true;
     f.rowId = newRow.id;
-    state.transactions.push({ id: uid(), source: "manual", ticker, broker: newRow.broker || "", date: new Date(`${f.date}T12:00:00`).toISOString(), type: f.type, qty, price, fx: fxForTx });
+    state.transactions.push({ id: uid(), source: "manual", ticker, date: new Date(`${f.date}T12:00:00`).toISOString(), type: f.type, qty, price, fx: fxForTx });
   } else {
     const row = p.rows.find((r) => r.id === f.rowId);
     if (!row) { f.error = "No encontré esa posición."; render(); return; }
@@ -2750,12 +3186,14 @@ function addTransaction() {
     const oldQty = parseNum(row.quantity);
     if (f.type === "buy") {
       row.quantity = oldQty + qty;
-    } else {
+      p.dirty = true;
+    } else if (f.type === "sell") {
       if (qty > oldQty + 0.0001) { f.error = `Esa posición solo tiene ${oldQty} unidades — no se puede vender ${qty}.`; render(); return; }
       row.quantity = Math.max(oldQty - qty, 0);
+      p.dirty = true;
     }
-    p.dirty = true;
-    state.transactions.push({ id: uid(), source: "manual", ticker: row.ticker, broker: row.broker || "", date: new Date(`${f.date}T12:00:00`).toISOString(), type: f.type, qty, price: price || row.avgCost || 0, fx: fxForTx });
+    // El dividendo NO modifica row.quantity: es un ingreso, no cambia cuántas acciones tienes.
+    state.transactions.push({ id: uid(), source: "manual", ticker: row.ticker, date: new Date(`${f.date}T12:00:00`).toISOString(), type: f.type, qty, price: price || row.avgCost || 0, fx: fxForTx });
   }
   persistTransactions();
 
@@ -2763,6 +3201,8 @@ function addTransaction() {
   // partir de TODO el historial de transacciones, con el método de costo promedio. Se aplica
   // solo a la fila donde se registró esta transacción (no a otras filas que compartan el mismo
   // ticker en otra corretora, que pueden tener un costo real distinto no reflejado aquí).
+  // recomputeCostBasisFromTransactions ignora las filas "dividend" (solo mira buy/sell), así
+  // que registrar un dividendo nunca altera el precio promedio de compra.
   // Nota: f.rowId ya fue reasignado al id real de la fila más arriba, aunque haya empezado en "__new__".
   const { avgCostUsd, avgCostBrl } = recomputeCostBasisFromTransactions(ticker);
   p.rows = p.rows.map((r) => (r.id === f.rowId ? { ...r, avgCost: avgCostUsd, avgCostBrl } : r));
@@ -2776,6 +3216,70 @@ function addTransaction() {
   render();
 }
 
+// Aviso automático de dividendos faltantes ("híbrido": el monto NETO siempre se carga a mano
+// o por CSV, porque ninguna API gratis devuelve el monto neto real después de la retención de
+// EE. UU. — esto solo avisa que un pago existió, usando el endpoint de dividendos de Finnhub,
+// que en el plan gratis puede no estar disponible para todos los tickers; si no lo está, se
+// avisa y no rompe nada — los dividendos siguen pudiendo registrarse a mano o por CSV).
+async function checkMissingDividends() {
+  const p = state.posicoes;
+  const finnhubKey = (p.finnhubKey || "").trim();
+  if (!finnhubKey) {
+    p.dividendCheckError = "Configura tu clave de Finnhub (arriba) para poder buscar dividendos pendientes.";
+    render();
+    return;
+  }
+  p.dividendCheckStatus = "loading";
+  p.dividendCheckError = null;
+  p.missingDividends = [];
+  render();
+
+  const tickers = [...new Set(state.portfolio.map((r) => r.ticker).filter(Boolean))];
+  const earliestTx = state.transactions.length
+    ? state.transactions.reduce((min, t) => (t.date < min ? t.date : min), state.transactions[0].date).slice(0, 10)
+    : new Date(Date.now() - 365 * 86400000).toISOString().slice(0, 10);
+  const toDate = todayYMD();
+
+  const existingByTicker = {};
+  state.transactions
+    .filter((t) => t.type === "dividend")
+    .forEach((t) => { (existingByTicker[t.ticker] = existingByTicker[t.ticker] || []).push(String(t.date).slice(0, 10)); });
+
+  const found = [];
+  let blocked = false;
+  await Promise.all(
+    tickers.map(async (sym) => {
+      try {
+        const url = `https://finnhub.io/api/v1/stock/dividend?symbol=${encodeURIComponent(sym)}&from=${earliestTx}&to=${toDate}&token=${encodeURIComponent(finnhubKey)}`;
+        const resp = await fetch(url);
+        if (resp.status === 403 || resp.status === 401) { blocked = true; return; }
+        const data = await resp.json();
+        if (!Array.isArray(data)) return;
+        data.forEach((d) => {
+          const perShare = parseFloat(d.amount);
+          const payDate = String(d.payDate || d.date || "").slice(0, 10);
+          if (!perShare || !payDate) return;
+          // tolerancia de unos días: la fecha que el usuario cargó (pago real) puede no
+          // coincidir exactamente con la que reporta la API (ex-date vs. pay date).
+          const already = (existingByTicker[sym] || []).some((ed) => Math.abs(new Date(`${ed}T12:00:00`) - new Date(`${payDate}T12:00:00`)) < 6 * 86400000);
+          if (!already) found.push({ ticker: sym, date: payDate, perShare });
+        });
+      } catch (_) {
+        // sin conexión u otro error puntual para este ticker: se ignora y se sigue con el resto
+      }
+    })
+  );
+
+  p.dividendCheckStatus = "idle";
+  p.missingDividends = found.sort((a, b) => new Date(b.date) - new Date(a.date));
+  p.dividendCheckError = blocked
+    ? "Tu plan de Finnhub no incluye histórico de dividendos para estos activos (suele requerir un plan pago) — puedes seguir registrándolos a mano o por CSV."
+    : found.length
+    ? null
+    : "No encontré dividendos pagados que no tengas ya registrados.";
+  render();
+}
+
 function importPurchasesFile(file) {
   const p = state.posicoes;
   const reader = new FileReader();
@@ -2783,7 +3287,9 @@ function importPurchasesFile(file) {
     try {
       const lines = String(reader.result).split(/\r?\n/).filter((l) => l.trim());
       if (!lines.length) throw new Error("vacío");
-      const delimiter = detectCsvDelimiter(lines[0]);
+      // Algunos exportadores (p. ej. Excel configurado en español/portugués) usan ";" como
+      // separador en vez de ",". Se detecta mirando cuál aparece más veces en el encabezado.
+      const delimiter = (lines[0].match(/;/g) || []).length > (lines[0].match(/,/g) || []).length ? ";" : ",";
       const header = parseCsvLine(lines[0], delimiter).map((h) => h.trim().toLowerCase());
       const idx = {
         symbol: header.indexOf("symbol"),
@@ -2817,33 +3323,81 @@ function importPurchasesFile(file) {
 
       // Keep a persisted record of every transaction (deduped), so the app remembers how far
       // back your investing history goes — used e.g. to build the year filters in Historial.
-      // La corretora entra en la clave de duplicados: si dos operaciones tienen la misma
-      // fecha/cantidad/precio pero son de corretoras distintas, son transacciones reales
-      // distintas (ej. el mismo aporte en dos cuentas), no un duplicado.
-      const normBroker = (b) => String(b || "").trim().toLowerCase();
-      const txKey = (t) => `${t.ticker}|${t.date}|${t.type}|${t.qty.toFixed(4)}|${t.price.toFixed(4)}|${normBroker(t.broker)}`;
+      // La clave de duplicados usa solo la FECHA (día calendario), no el timestamp completo:
+      // así una reimportación no crea un duplicado por una diferencia de horario entre cómo
+      // quedó guardada la transacción la primera vez y cómo se parsea ahora.
+      const txKey = (t) => `${t.ticker}|${String(t.date).slice(0, 10)}|${t.type}|${t.qty.toFixed(4)}|${t.price.toFixed(4)}|${String(t.broker || "").trim().toLowerCase()}`;
       const existingKeys = new Set(state.transactions.map(txKey));
       let fxBackfilledFromCsv = 0;
+      let dividendsImported = 0;
       txs.forEach((cols) => {
         const rawSym = (cols[idx.symbol] || "").trim();
         const sym = rawSym.includes(":") ? rawSym.split(":").pop() : rawSym;
         if (!sym) return;
         const type = (cols[idx.type] || "").trim().toLowerCase();
-        if (type !== "buy" && type !== "sell") return;
+        // "dividend" usa la misma columna "type" que buy/sell. El monto BRUTO (antes de la
+        // retención de EE. UU.) se guarda igual que una compra/venta: qty × price, donde price
+        // es el dividendo bruto por acción en US$ — así un split aplicado más tarde a ese
+        // ticker (qty×ratio, price÷ratio) sigue dejando el monto bruto total correcto.
+        if (type !== "buy" && type !== "sell" && type !== "dividend") return;
         const dateRaw = cols[idx.date] || "";
         const date = dateRaw ? (parseFlexibleDate(dateRaw) || new Date()).toISOString() : new Date().toISOString();
         const fxFromFile = idx.fx !== -1 ? parseNum(cols[idx.fx]) || null : null;
-        const brokerFromFile = idx.broker !== -1 ? (cols[idx.broker] || "").trim() : "";
         // Si ya se registró un desdoblamiento para este ticker, la fila cruda del CSV (con la
         // cantidad/precio originales, sin ajustar) se ajusta a la MISMA escala que ya tienen
         // las transacciones guardadas — así una reimportación no agrega una versión duplicada
         // y desajustada de una compra que ya estaba correctamente ajustada por el split.
-        const { qty: adjQty, price: adjPrice } = applySplitsToRawValue(sym, date, parseQty(cols[idx.qty]), parseNum(cols[idx.price]));
+        // Aplicar splits a las transacciones antiguas para que queden en la misma escala
+        // que las acciones actuales. PERO: algunos exports (como Kinvo) ya vienen con
+        // cantidades post-split — en ese caso aplicar el split de nuevo las duplicaría.
+        // Detectamos esto comparando la cantidad neta del CSV (sin ajustar) contra la cantidad
+        // neta que resultaría de aplicar el split. Si el CSV ya tiene la cantidad correcta
+        // (post-split), NO aplicamos el ajuste.
+        const rawNetQty = txs
+          .filter(cols => {
+            const rawSym = (cols[idx.symbol] || '').trim();
+            const sym2 = rawSym.includes(':') ? rawSym.split(':').pop() : rawSym;
+            const type = (cols[idx.type] || '').trim().toLowerCase();
+            return sym2 === sym && (type === 'buy' || type === 'sell');
+          })
+          .reduce((acc, cols) => {
+            const type = (cols[idx.type] || '').trim().toLowerCase();
+            return acc + (type === 'buy' ? parseQty(cols[idx.qty]) : -parseQty(cols[idx.qty]));
+          }, 0);
+
+        const adjustedNetQty = txs
+          .filter(cols => {
+            const rawSym = (cols[idx.symbol] || '').trim();
+            const sym2 = rawSym.includes(':') ? rawSym.split(':').pop() : rawSym;
+            const type = (cols[idx.type] || '').trim().toLowerCase();
+            return sym2 === sym && (type === 'buy' || type === 'sell');
+          })
+          .reduce((acc, cols) => {
+            const rawSym = (cols[idx.symbol] || '').trim();
+            const sym2 = rawSym.includes(':') ? rawSym.split(':').pop() : rawSym;
+            const dateRaw = cols[idx.date] || '';
+            const date = dateRaw ? (parseFlexibleDate(dateRaw) || new Date()).toISOString() : new Date().toISOString();
+            const type = (cols[idx.type] || '').trim().toLowerCase();
+            const { qty: adjQ } = applySplitsToRawValue(sym2, date, parseQty(cols[idx.qty]), parseNum(cols[idx.price]));
+            return acc + (type === 'buy' ? adjQ : -adjQ);
+          }, 0);
+
+        // Si la cantidad neta ya ajustada es significativamente mayor que la cruda (más del 10%),
+        // el CSV viene con cantidades pre-split y hay que ajustar. Si son similares, ya viene post-split.
+        const csvAlreadyAdjusted = Math.abs(adjustedNetQty - rawNetQty) / (rawNetQty || 1) > 0.1
+          ? false  // hay diferencia grande → CSV es pre-split, aplicar ajuste
+          : true;  // son similares → CSV ya es post-split, NO ajustar
+
+        const { qty: adjQty, price: adjPrice } = csvAlreadyAdjusted
+          ? { qty: parseQty(cols[idx.qty]), price: parseNum(cols[idx.price]) }
+          : applySplitsToRawValue(sym, date, parseQty(cols[idx.qty]), parseNum(cols[idx.price]));
+        const brokerFromFile = idx.broker !== -1 ? (cols[idx.broker] || "").trim() : "";
         const rec = { ticker: sym, date, type, qty: adjQty, price: adjPrice, fx: fxFromFile, broker: brokerFromFile };
         const key = txKey(rec);
         if (!existingKeys.has(key)) {
           existingKeys.add(key);
           state.transactions.push({ id: uid(), source: "csv", ...rec });
+          if (type === "dividend") dividendsImported++;
         } else if (fxFromFile) {
           // Esta transacción ya estaba guardada (de una importación anterior, posiblemente de
           // un archivo sin la columna "fx") — si todavía no tenía el cambio histórico, se
@@ -2862,12 +3416,16 @@ function importPurchasesFile(file) {
       // correcta, se elimina la cruda ahora.
       const duplicatesRemoved = dedupeSplitDuplicateTransactions();
 
-      // El precio promedio (y ahora la cantidad) se recalcula a partir de TODO el historial de
-      // transacciones ya persistido (no solo de las filas de este archivo), para que sea
-      // correcto incluso si el CSV importado es parcial o se reimporta más de una vez. Si el
-      // archivo trae la columna broker/institution, se procesa por CADA PAR (ticker, corretora)
-      // por separado — así ya no hay ambigüedad cuando el mismo ticker está en más de una
-      // corretora, cada una se actualiza con su propio historial y su propia fila.
+      // El precio promedio se recalcula a partir de TODO el historial de transacciones ya
+      // persistido (no solo de las filas de este archivo), para que sea correcto incluso si
+      // el CSV importado es parcial o se reimporta más de una vez.
+      // También se recalcula la CANTIDAD de cada activo (suma de compras menos ventas),
+      // así la tabla de posiciones siempre es consistente con el historial de transacciones
+      // sin que el usuario tenga que ingresar cantidades manualmente.
+      // Si el archivo trae la columna broker/institution, se procesa por CADA PAR
+      // (ticker, corretora) por separado — ya no hay que adivinar cuál es la posición
+      // "dominante" cuando el mismo ticker está en más de una corretora: cada una se
+      // actualiza con su propio historial y su propia fila (se crea si todavía no existe).
       const hasBrokerCol = idx.broker !== -1;
       const pairsInFile = new Map(); // key -> { sym, broker }
       txs.forEach((cols) => {
@@ -2878,40 +3436,81 @@ function importPurchasesFile(file) {
         const key = sym + "\u0000" + broker;
         if (!pairsInFile.has(key)) pairsInFile.set(key, { sym, broker });
       });
-      // por si la limpieza de splits afectó un ticker que no estaba en este archivo
       state.splits.forEach((s) => {
         const key = s.ticker + "\u0000";
         if (!pairsInFile.has(key)) pairsInFile.set(key, { sym: s.ticker, broker: "" });
       });
 
       let matched = 0;
-      let qtyUpdated = 0;
       let created = 0;
-      let ambiguous = 0;
+      const normBroker = (b) => String(b || "").trim().toLowerCase();
       pairsInFile.forEach(({ sym, broker }) => {
         const effectiveBroker = hasBrokerCol && broker ? broker : undefined;
-        const { avgCostUsd, avgCostBrl, qty } = recomputeCostBasisFromTransactions(sym, effectiveBroker);
-        if (avgCostUsd === null) return;
+        const { avgCostUsd, avgCostBrl } = recomputeCostBasisFromTransactions(sym, effectiveBroker);
+
+        // Calcular cantidad neta desde transacciones (compras - ventas, ignorando dividendos),
+        // filtrando por corretora cuando corresponda.
+        const netQty = state.transactions
+          .filter((t) => t.ticker === sym && (t.type === "buy" || t.type === "sell") && (effectiveBroker == null || normBroker(t.broker) === normBroker(effectiveBroker)))
+          .reduce((acc, t) => acc + (t.type === "buy" ? t.qty : -t.qty), 0);
+
+        if (avgCostUsd === null && netQty <= 0.0001) return; // ticker (+corretora) sin posición activa
+
         matched++;
-        const result = applyAvgCostAndQtyToTickerRows(sym, avgCostUsd, avgCostBrl, qty, effectiveBroker);
-        if (result.created) created++;
-        else if (result.qtyUpdated) qtyUpdated++;
-        else if (result.ambiguous) ambiguous++;
+        const roundedQty = Math.round(netQty * 100000) / 100000; // 5 decimales
+
+        if (effectiveBroker) {
+          const applied = applyAvgCostToTickerRows(sym, avgCostUsd, avgCostBrl, effectiveBroker);
+          if (netQty > 0.0001) {
+            const targetRow = (state.posicoes?.rows || []).find((r) => r.ticker === sym && normBroker(r.broker) === normBroker(effectiveBroker));
+            if (targetRow) {
+              if (state.posicoes) {
+                state.posicoes.rows = state.posicoes.rows.map((r) => (r.id === targetRow.id ? { ...r, quantity: roundedQty } : r));
+              }
+              state.portfolio = state.portfolio.map((r) => (r.id === targetRow.id ? { ...r, quantity: roundedQty } : r));
+            } else {
+              // No existía ninguna fila para este ticker+corretora todavía: se crea.
+              const newRow = { id: uid(), ticker: sym, broker: effectiveBroker, quantity: roundedQty, price: "", saldo: 0, avgCost: avgCostUsd, avgCostBrl };
+              state.portfolio = [...state.portfolio, newRow];
+              if (state.posicoes) state.posicoes.rows = [...state.posicoes.rows, { ...newRow }];
+              created++;
+            }
+          }
+          if (!applied && netQty <= 0.0001) {
+            // sin cantidad y sin fila previa: nada que crear ni actualizar
+          }
+        } else {
+          // Sin columna broker en el archivo: comportamiento de siempre (posición dominante).
+          applyAvgCostToTickerRows(sym, avgCostUsd, avgCostBrl);
+          if (netQty > 0.0001) {
+            const rowsForTicker = (state.posicoes?.rows || []).filter((r) => r.ticker === sym);
+            const targetRow = rowsForTicker.length <= 1
+              ? rowsForTicker[0]
+              : rowsForTicker.reduce((a, b) => (parseNum(b.quantity) > parseNum(a.quantity) ? b : a));
+            if (targetRow) {
+              if (state.posicoes) {
+                state.posicoes.rows = state.posicoes.rows.map((r) => (r.id === targetRow.id ? { ...r, quantity: roundedQty } : r));
+              }
+              state.portfolio = state.portfolio.map((r) => (r.id === targetRow.id ? { ...r, quantity: roundedQty } : r));
+            }
+          }
+        }
       });
+      if (state.posicoes) state.posicoes.dirty = true;
       persistPortfolio();
       resetPosicoesState();
-      state.posicoes.quotesError = matched
+      state.posicoes.quotesError = matched || dividendsImported
         ? null
         : ["No encontré ningún ticker de ese archivo que coincida con tu carteira."];
       state.posicoes.importPurchasesMessage = matched
-        ? `Precio de compra y cantidad actualizados para ${qtyUpdated + created} activo(s)` +
-          (created ? ` (${created} posición(es) nueva(s) creada(s))` : "") +
+        ? `Precio de compra y cantidad actualizados para ${matched} activo(s)` +
+          (created ? ` (${created} posición(es) nueva(s) creada(s) por corretora)` : "") +
           `.` +
-          (ambiguous
-            ? ` ${ambiguous} activo(s) tienen varias filas (distintas corretoras) sin columna "broker" en el archivo, así que la cantidad no se tocó — agregá esa columna al CSV o revisalas a mano; el precio promedio sí se actualizó en la posición principal.`
-            : "") +
+          (dividendsImported ? ` Se importaron ${dividendsImported} dividendo(s).` : "") +
           (fxBackfilledFromCsv ? ` Se completó el cambio histórico (columna "fx") de ${fxBackfilledFromCsv} transacción(es) que ya tenías guardadas.` : "") +
           (duplicatesRemoved ? ` Se eliminaron ${duplicatesRemoved} transacción(es) duplicada(s) (de una versión sin ajustar por un desdoblamiento).` : "")
+        : dividendsImported
+        ? `Se importaron ${dividendsImported} dividendo(s).`
         : null;
       render();
     } catch (err) {
@@ -2945,6 +3544,9 @@ function importBackupFile(file) {
         localStorage.setItem("pnl-quotes", JSON.stringify(data.quotes || {}));
         localStorage.setItem("pnl-logos", JSON.stringify(data.logos || {}));
         localStorage.setItem("pnl-fx", JSON.stringify(typeof data.fxRateInput === "string" ? parseNum(data.fxRateInput) : data.fxRateInput || null));
+        if (data.dividendTaxPct !== undefined && data.dividendTaxPct !== null && data.dividendTaxPct !== "") {
+          localStorage.setItem("pnl-dividend-tax", String(data.dividendTaxPct));
+        }
       } catch (_) {}
       persistPortfolio();
       persistHistory();
@@ -2992,10 +3594,82 @@ function exportCsv() {
 
 function switchTab(tab) {
   state.tab = tab;
-  if (tab === "hoje") resetHojeState();
+  if (tab === "hoje") syncHojeOnTabEnter();
   else if (tab === "posicoes") resetPosicoesState();
-  else if (tab === "historico") resetHistoricoState();
+  else if (tab === "historico") {
+    resetHistoricoState();
+    loadFullHistoryFromCloud(); // carga el historial completo desde Supabase en segundo plano
+  }
   render();
+}
+
+// Carga el historial completo desde Supabase solo cuando el usuario entra a "Historial".
+// Para los gráficos no necesitamos el detalle de cada posición (campo `rows`) — solo los
+// totales. Sin `rows`, cada entrada pesa ~100 bytes en vez de ~2KB, haciendo que 1286 días
+// quepan en memoria sin problemas y sin saturar el localStorage ni trabar "Hoy".
+let fullHistoryLoaded = false;
+async function loadFullHistoryFromCloud() {
+  if (fullHistoryLoaded && state.history.length > 90) return;
+  try {
+    state.historico.importStatus = "loading";
+    state.historico.importProgressLabel = "Cargando historial…";
+    render();
+
+    // Cargar sin el campo `rows` pero CON `total_saldo` (necesario para el TWR)
+    // Los bloques de 500 evitan el límite de 1000 filas de Supabase
+    const [block1, block2, block3] = await Promise.all([
+      sbRequest("GET", "history", null, `?user_id=eq.${SB_USER}&select=id,date,price_total,fx_pct,fx_gain,total,total_saldo&order=date.asc&offset=0&limit=500`),
+      sbRequest("GET", "history", null, `?user_id=eq.${SB_USER}&select=id,date,price_total,fx_pct,fx_gain,total,total_saldo&order=date.asc&offset=500&limit=500`),
+      sbRequest("GET", "history", null, `?user_id=eq.${SB_USER}&select=id,date,price_total,fx_pct,fx_gain,total,total_saldo&order=date.asc&offset=1000&limit=500`),
+    ]);
+
+    const all = [...(block1 || []), ...(block2 || []), ...(block3 || [])];
+    if (!all.length) { state.historico.importStatus = "idle"; state.historico.importProgressLabel = null; render(); return; }
+
+    // Deduplicar por fecha (YYYY-MM-DD) — quedarse con el registro más reciente por día
+    const byDate = {};
+    all.forEach((r) => {
+      const day = String(r.date).slice(0, 10);
+      if (!byDate[day] || r.date > byDate[day].date) byDate[day] = r;
+    });
+    const deduped = Object.values(byDate).sort((a, b) => a.date.localeCompare(b.date));
+
+    const localById = Object.fromEntries(state.history.map((h) => [h.id, h]));
+    state.history = deduped.map((r) => ({
+      ...(localById[r.id] || {}),
+      id: r.id, date: r.date,
+      priceTotal: r.price_total, fxPct: r.fx_pct, fxGain: r.fx_gain, total: r.total,
+      totalSaldo: Number(r.total_saldo) || 0,
+      rows: localById[r.id]?.rows || [],
+    })).sort((a, b) => new Date(a.date) - new Date(b.date));
+
+    fullHistoryLoaded = true;
+    state.historico.importStatus = "idle";
+    state.historico.importProgressLabel = null;
+    render();
+  } catch (e) {
+    console.warn("[supabase] Error al cargar historial completo:", e);
+    state.historico.importStatus = "idle";
+    state.historico.importProgressLabel = null;
+    render();
+  }
+}
+
+// A diferencia de resetHojeState() (que se usa para descartar/cancelar a propósito), esta
+// función se llama cada vez que se vuelve a la pestaña "Hoy" navegando desde otra pestaña.
+// Antes llamaba directo a resetHojeState(), que si hoy todavía no estaba guardado en el
+// historial (por ejemplo, una vista previa de "Actualizar variación"/pegar/manual que el
+// usuario no llegó a guardar) la reseteaba a "idle" y borraba esa vista previa — eso era lo
+// que hacía "desaparecer" el banner y el total con variación al navegar entre pestañas y
+// volver a "Hoy". Ahora solo se sincroniza con el historial (por si se guardó automáticamente
+// mientras el usuario estaba en otra pestaña); si no hay nada guardado pero ya existe una
+// vista previa en memoria ("result"/"review"), se conserva tal cual.
+function syncHojeOnTabEnter() {
+  const todayEntry = state.history.find((e) => dateToBrazilYMD(e.date) === brazilTodayYMD());
+  if (!todayEntry && state.hoje && (state.hoje.status === "result" || state.hoje.status === "review")) {
+    return; // hay una vista previa sin guardar: no la pisamos
+  }
+  resetHojeState();
 }
 
 function render() {
@@ -3020,6 +3694,8 @@ function render() {
   // se usa esa vista previa para que la variación del día aparezca en el saldo total
   // (número grande) del header en todas las pestañas, no solo después de guardarse.
   const dayChangeSource = isTodayEntry ? lastEntry : state.hoje && state.hoje.status === "result" ? state.hoje.result : null;
+  const fxRate = parseNum(state.posicoes?.fxRateInput);
+  const fxRateHtml = fxRate ? `<span class="header-fx-rate muted small">US$ 1 = R$ ${fxRate.toFixed(4)}</span>` : "";
   const dayChangeHtml = dayChangeSource
     ? `<span class="header-total-change ${dayChangeSource.total >= 0 ? "up" : "down"}">${dayChangeSource.total >= 0 ? "+" : ""}${fmtBRL(dayChangeSource.total)} (${fmtPct(totalSaldo ? (dayChangeSource.total / totalSaldo) * 100 : 0)})</span>`
     : "";
@@ -3042,6 +3718,7 @@ function render() {
               </div>
               <span class="header-total-value" id="header-total-value">${displayedTotal}</span>
               ${dayChangeHtml}
+              ${fxRateHtml}
             </div>
           </div>
         </div>
@@ -3083,9 +3760,33 @@ function handleAction(action, el) {
     case "move-row-down": moveRow(id, 1); break;
     case "save-positions": savePositions(); break;
     case "export-backup": exportBackup(); break;
+    case "sync-push-all": syncPushAllToCloud().then(() => { alert("✅ Todos tus datos fueron subidos a la nube."); }); break;
+    case "sync-pull": syncPullFromCloud().then(() => { alert("✅ Sincronización desde la nube completada."); }); break;
+    case "enable-notifications":
+      requestPushPermission().then((r) => {
+        if (r === "granted") alert("✅ Notificaciones activadas. Te avisaremos cuando el historial se guarde y si hay movimientos fuertes.");
+        else if (r === "denied") alert("❌ Bloqueaste las notificaciones. Para activarlas, permitilas desde el ícono del candado en la barra del navegador.");
+        else if (r === "unsupported") alert("Tu navegador no soporta notificaciones push.");
+        render();
+      });
+      break;
     case "trigger-import-backup": document.getElementById("import-backup-input")?.click(); break;
     case "trigger-import-purchases": document.getElementById("import-purchases-input")?.click(); break;
     case "add-transaction": addTransaction(); break;
+    case "check-missing-dividends": checkMissingDividends(); break;
+    case "toggle-dividends-expanded": state.posicoes.dividendsExpanded = !state.posicoes.dividendsExpanded; render(); break;
+    case "toggle-advanced": state.posicoes.advancedExpanded = !state.posicoes.advancedExpanded; render(); break;
+    case "quickadd-dividend": {
+      const f = state.posicoes.txForm;
+      const row = state.posicoes.rows.find((r) => r.ticker === el.dataset.ticker);
+      f.rowId = row ? row.id : "__new__";
+      f.type = "dividend";
+      f.date = el.dataset.date;
+      f.price = el.dataset.price;
+      f.qty = row ? String(row.quantity) : "";
+      render();
+      break;
+    }
     case "add-split": addSplitAction(); break;
     case "dedupe-splits": dedupeSplitsManualAction(); break;
     case "remove-split": removeSplitAction(id); break;
@@ -3097,7 +3798,19 @@ function handleAction(action, el) {
     case "export-csv": exportCsv(); break;
     case "edit-entry": startEditEntry(id); break;
     case "compare-spx": compareSpx(); break;
-    case "set-period": state.historico.periodFilter = el.dataset.period; render(); break;
+    case "compare-cdi": compareCdi(); break;
+    case "toggle-records-expanded": state.historico.recordsExpanded = !state.historico.recordsExpanded; render(); break;
+    case "toggle-monthly-expanded": state.historico.monthlyExpanded = !state.historico.monthlyExpanded; render(); break;
+    case "set-period":
+      state.historico.periodFilter = el.dataset.period;
+      // El resultado de "Comparar con S&P 500/CDI" quedó calculado para el período ANTERIOR;
+      // se limpia para que no parezca que ya compara el período nuevo sin haber tocado el botón.
+      state.historico.spxPct = null;
+      state.historico.spxError = null;
+      state.historico.cdiPct = null;
+      state.historico.cdiError = null;
+      render();
+      break;
     case "cancel-entry-edit": cancelEditEntry(); break;
     case "save-entry-edit": saveEntryEdit(); break;
     case "clear-history": clearHistoryAction(); break;
@@ -3118,6 +3831,30 @@ function handleAction(action, el) {
 }
 
 const root = document.getElementById("app");
+
+// Algunos campos (tasa de retención de dividendos, % manual de Ibovespa, vista previa de
+// dividendo) necesitan un render() completo para reflejarse en otras partes de la pantalla,
+// pero un render() completo reemplaza todo el HTML y el navegador pierde el foco del input
+// donde se está escribiendo. Esta función guarda qué input (y qué posición del cursor) estaba
+// enfocado, renderiza, y reenfoca el mismo input en el mismo lugar — así escribir no salta.
+function renderPreservingFocus() {
+  const active = document.activeElement;
+  const sel =
+    active && active.matches && active.matches("[data-bind]")
+      ? { bind: active.dataset.bind, id: active.dataset.id, start: active.selectionStart, end: active.selectionEnd }
+      : null;
+  render();
+  if (sel) {
+    const elSel = sel.id ? `[data-bind="${sel.bind}"][data-id="${sel.id}"]` : `[data-bind="${sel.bind}"]`;
+    const el = root.querySelector(elSel);
+    if (el) {
+      el.focus();
+      if (typeof el.setSelectionRange === "function" && sel.start != null) {
+        try { el.setSelectionRange(sel.start, sel.end); } catch (_) {}
+      }
+    }
+  }
+}
 
 root.addEventListener("click", (e) => {
   const el = e.target.closest("[data-action]");
@@ -3171,10 +3908,16 @@ root.addEventListener("input", (e) => {
     state.posicoes.txForm.newBroker = el.value;
   } else if (bind === "txQty") {
     state.posicoes.txForm.qty = el.value;
+    if (state.posicoes.txForm.type === "dividend") renderPreservingFocus(); // refresca la vista previa bruto/neto
   } else if (bind === "txPrice") {
     state.posicoes.txForm.price = el.value;
+    if (state.posicoes.txForm.type === "dividend") renderPreservingFocus();
   } else if (bind === "txDate") {
     state.posicoes.txForm.date = el.value;
+  } else if (bind === "dividendTaxPct") {
+    state.posicoes.dividendTaxPct = el.value;
+    persistQuotesCache();
+    renderPreservingFocus();
   } else if (bind === "splitTicker") {
     state.posicoes.splitForm.ticker = el.value;
   } else if (bind === "splitDate") {
@@ -3211,7 +3954,7 @@ root.addEventListener("change", (e) => {
   const txRowSel = e.target.closest('[data-bind="txRowId"]');
   if (txRowSel) { state.posicoes.txForm.rowId = txRowSel.value; render(); }
   const txTypeSel = e.target.closest('[data-bind="txType"]');
-  if (txTypeSel) state.posicoes.txForm.type = txTypeSel.value;
+  if (txTypeSel) { state.posicoes.txForm.type = txTypeSel.value; render(); }
 });
 
 /* ---------------------------------------------------------------------- */
@@ -3290,9 +4033,432 @@ function startAutoSaveWatcher() {
   setInterval(maybeAutoSaveToday, 60000);
 }
 
+// Auto-refresh de cotizaciones cada 30 minutos SOLO durante el horario de mercado de EE. UU.
+// (9:30 - 16:00 ET, lunes a viernes). Fuera de ese horario no consume créditos de API.
+// Cada dispositivo con la app abierta corre su propio timer — con 2 dispositivos y 8 activos
+// el consumo es ~208 créditos/día (muy por debajo del límite de 800 del plan gratuito).
+const MARKET_OPEN_HOUR_ET = 9;   // 9:30 ET
+const MARKET_OPEN_MIN_ET = 30;
+const MARKET_CLOSE_HOUR_ET = 16; // 16:00 ET
+const AUTO_REFRESH_INTERVAL_MS = 30 * 60 * 1000; // 30 minutos
+
+function isMarketOpen() {
+  if (isMarketClosedToday()) return false; // fin de semana o feriado
+  // La zona horaria ET (Eastern Time) es UTC-5 en invierno y UTC-4 en verano. En vez de
+  // importar una librería de tz, usamos Intl para leer la hora local en ET directamente.
+  try {
+    const etNow = new Date().toLocaleString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "numeric", hour12: false });
+    const [hStr, mStr] = etNow.split(":");
+    const h = parseInt(hStr, 10);
+    const m = parseInt(mStr, 10);
+    const minutesSinceMidnight = h * 60 + m;
+    const open = MARKET_OPEN_HOUR_ET * 60 + MARKET_OPEN_MIN_ET;
+    const close = MARKET_CLOSE_HOUR_ET * 60;
+    return minutesSinceMidnight >= open && minutesSinceMidnight < close;
+  } catch (_) {
+    // Intl no disponible en algún navegador muy viejo — asumimos mercado abierto para no
+    // perder la actualización (el consumo de créditos ya es muy bajo de todas formas).
+    return true;
+  }
+}
+
+async function autoRefreshQuotes() {
+  if (!isMarketOpen()) return; // fuera del horario, no hacer nada
+  const finnhubKey = (state.posicoes?.finnhubKey || "").trim();
+  if (!finnhubKey) return; // sin clave no hay precio que buscar
+  // Si hay una edición manual en curso en la pestaña "Hoy", no interrumpir
+  if (state.hoje?.status === "review") return;
+  // Actualiza tanto los precios en posicoes como el banner de variación del día
+  await fetchLiveDayChange();
+}
+
+function startAutoRefresh() {
+  // El primer tick ocurre al abrir la app (si el mercado está abierto), luego cada 30 min.
+  autoRefreshQuotes();
+  setInterval(autoRefreshQuotes, AUTO_REFRESH_INTERVAL_MS);
+}
+
+// Cuando el usuario vuelve a la pestaña/ventana después de tenerla en segundo plano, puede
+// haber pasado más de 30 min y el timer interno puede haberse "pausado" (los navegadores
+// limitan los timers en tabs inactivas). Por eso al recuperar el foco también se refresca.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") autoRefreshQuotes();
+});
+
 /* ---------------------------------------------------------------------- */
-/*  Init                                                                   */
+/*  Supabase — sincronización en la nube                                  */
 /* ---------------------------------------------------------------------- */
+// La app funciona 100% offline con localStorage como siempre. Supabase es una
+// capa adicional: cada vez que se guarda algo localmente, también se sube a la
+// nube en segundo plano (fire-and-forget). Al abrir la app, si hay datos más
+// recientes en la nube que en localStorage, se descargan automáticamente.
+// Así 3-4 dispositivos siempre quedan sincronizados sin intervención manual.
+
+const SUPABASE_URL = "https://uylqfjbyouretvyfrlyy.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV5bHFmamJ5b3VyZXR2eWZybHl5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI5MjQxNzcsImV4cCI6MjA5ODUwMDE3N30.BOHnj6vsyqfsZfmcpYCLDx8tyYsS-B_SbEq40lDcSbk";
+const SB_HEADERS = {
+  "Content-Type": "application/json",
+  "apikey": SUPABASE_ANON_KEY,
+  "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
+  "Prefer": "resolution=merge-duplicates",
+  "Range-Unit": "items",
+  "Range": "0-9999", // permite hasta 10000 filas por query (suficiente para años de historial)
+};
+const SB_USER = "default"; // app personal, un solo usuario
+
+// Helper base para llamadas a la API REST de Supabase
+async function sbRequest(method, table, body = null, query = "") {
+  try {
+    const resp = await fetch(`${SUPABASE_URL}/rest/v1/${table}${query}`, {
+      method,
+      headers: SB_HEADERS,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (!resp.ok) {
+      const err = await resp.text();
+      console.warn(`[supabase] ${method} ${table}: ${resp.status}`, err);
+      return null;
+    }
+    const text = await resp.text();
+    return text ? JSON.parse(text) : [];
+  } catch (e) {
+    console.warn(`[supabase] ${method} ${table} error:`, e);
+    return null;
+  }
+}
+
+// ── UPSERT helpers ──────────────────────────────────────────────────────────
+
+async function sbUpsertHistory(entries) {
+  if (!entries.length) return;
+  // Nunca subir entradas del backfill externo (day-*) — son solo para relleno histórico
+  // y no deben circular entre dispositivos ni pisar entradas reales en Supabase.
+  const filtered = entries.filter((e) => !String(e.id).startsWith("day-"));
+  if (!filtered.length) return;
+  const rows = filtered.map((e) => ({
+    id: e.id, user_id: SB_USER, date: e.date,
+    rows: e.rows,
+    price_total: e.priceTotal, fx_pct: e.fxPct,
+    fx_gain: e.fxGain, total: e.total,
+    total_saldo: e.totalSaldo || (e.rows?.reduce((s, r) => s + (r.saldo || 0), 0) || 0),
+  }));
+  const CHUNK = 100;
+  for (let i = 0; i < rows.length; i += CHUNK) {
+    await sbRequest("POST", "history", rows.slice(i, i + CHUNK), "?on_conflict=id");
+  }
+}
+
+async function sbUpsertTransactions(txs) {
+  if (!txs.length) return;
+  const rows = txs.map((t) => ({
+    id: t.id, user_id: SB_USER, ticker: t.ticker, date: t.date,
+    type: t.type, qty: t.qty, price: t.price, fx: t.fx ?? null, source: t.source ?? null,
+  }));
+  await sbRequest("POST", "transactions", rows, "?on_conflict=id");
+}
+
+async function sbUpsertPortfolio(portfolio) {
+  if (!portfolio.length) return;
+  const rows = portfolio.map((p, i) => ({
+    id: p.id, user_id: SB_USER, ticker: p.ticker, broker: p.broker ?? "",
+    quantity: p.quantity, avg_cost: p.avgCost ?? null, avg_cost_brl: p.avgCostBrl ?? null,
+    saldo: p.saldo, sort_order: i,
+  }));
+  await sbRequest("POST", "portfolio", rows, "?on_conflict=id");
+  // NOTA: no eliminamos filas de la nube desde el pull — solo desde el push explícito.
+  // Si lo hiciéramos aquí, un dispositivo recién sincronizado (con portfolio parcial)
+  // podría borrar filas válidas de la nube que todavía no descargó.
+}
+
+async function sbUpsertSplits(splits) {
+  if (!splits.length) return;
+  // Deduplicar por contenido (ticker+date+ratio) antes de subir — evita que dos dispositivos
+  // que crearon el mismo split con UIDs distintos terminen con duplicados en la nube.
+  const seen = new Set();
+  const deduped = splits.filter((s) => {
+    const key = `${s.ticker}|${String(s.date).slice(0, 10)}|${s.ratio}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  const rows = deduped.map((s) => ({
+    id: s.id, user_id: SB_USER, ticker: s.ticker, date: s.date, ratio: s.ratio,
+  }));
+  await sbRequest("POST", "splits", rows, "?on_conflict=id");
+
+  // Limpiar duplicados que ya existan en la nube (por si quedaron de versiones anteriores).
+  // Descargamos todos los splits de la nube, detectamos duplicados por contenido, y borramos
+  // los extras manteniendo solo el más antiguo (el primero que se creó).
+  const cloudAll = await sbRequest("GET", "splits", null, `?user_id=eq.${SB_USER}&select=*`);
+  if (cloudAll?.length > 1) {
+    const cloudSeen = new Set();
+    const toDelete = [];
+    cloudAll
+      .sort((a, b) => new Date(a.created_at || 0) - new Date(b.created_at || 0)) // más antiguo primero
+      .forEach((r) => {
+        const key = `${r.ticker}|${String(r.date).slice(0, 10)}|${r.ratio}`;
+        if (cloudSeen.has(key)) toDelete.push(r.id);
+        else cloudSeen.add(key);
+      });
+    if (toDelete.length) {
+      await sbRequest("DELETE", "splits", null, `?id=in.(${toDelete.join(",")})`);
+      console.log(`[supabase] Eliminados ${toDelete.length} split(s) duplicado(s) de la nube`);
+    }
+  }
+}
+
+// ── PULL — descarga datos de la nube al abrir la app ────────────────────────
+
+async function syncPullFromCloud() {
+  try {
+    // Para el historial, solo bajamos los últimos 90 días al abrir la app —
+    // suficiente para el funcionamiento diario y los gráficos recientes.
+    // El historial completo se carga solo cuando el usuario entra a "Historial".
+    const ninetyDaysAgo = new Date();
+    ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+    const ninetyDaysAgoStr = ninetyDaysAgo.toISOString().slice(0, 10);
+
+    const [cloudHistory, cloudTxs, cloudPortfolio, cloudSplits, cloudSettings] = await Promise.all([
+      sbRequest("GET", "history", null, `?user_id=eq.${SB_USER}&select=*&order=date.asc&date=gte.${ninetyDaysAgoStr}T00:00:00`),
+      sbRequest("GET", "transactions", null, `?user_id=eq.${SB_USER}&select=*&order=date.asc&limit=10000`),
+      sbRequest("GET", "portfolio", null, `?user_id=eq.${SB_USER}&select=*&order=sort_order.asc`),
+      sbRequest("GET", "splits", null, `?user_id=eq.${SB_USER}&select=*`),
+      sbRequest("GET", "settings", null, `?user_id=eq.${SB_USER}&select=*`),
+    ]);
+
+    let changed = false;
+
+    // Historial — agregar entradas que faltan localmente
+    if (cloudHistory?.length) {
+      const cloudMapped = cloudHistory.map((r) => ({
+        id: r.id, date: r.date, rows: r.rows,
+        priceTotal: r.price_total, fxPct: r.fx_pct, fxGain: r.fx_gain, total: r.total,
+        totalSaldo: Number(r.total_saldo) || 0,
+      }));
+      // Fusionar local + nube deduplicando por fecha (YYYY-MM-DD).
+      // Prioridad: entradas reales (row-*, real-*) > entradas del backfill (day-*)
+      // Si el mismo día tiene una entrada real y una del backfill, gana la real siempre.
+      const allEntries = [...state.history, ...cloudMapped];
+      const byDate = {};
+      const isBackfillEntry = (e) => String(e.id).startsWith("day-");
+      allEntries.forEach((e) => {
+        const day = String(e.date).slice(0, 10);
+        const existing = byDate[day];
+        if (!existing) { byDate[day] = e; return; }
+        // Si la existente es real y la nueva es backfill → ignorar la nueva
+        if (!isBackfillEntry(existing) && isBackfillEntry(e)) return;
+        // Si la existente es backfill y la nueva es real → usar la nueva
+        if (isBackfillEntry(existing) && !isBackfillEntry(e)) { byDate[day] = e; return; }
+        // Ambas del mismo tipo → más reciente gana
+        if (String(e.date) > String(existing.date)) byDate[day] = e;
+      });
+      const merged = Object.values(byDate).sort((a, b) => new Date(a.date) - new Date(b.date));
+      if (merged.length !== state.history.length || merged.some((m, i) => m.id !== state.history[i]?.id)) {
+        state.history = merged;
+        changed = true;
+      }
+
+      // Deduplicar por día Brasil — si hay 2 entradas para el mismo día, borrar la más vieja
+      const byDayBr = {};
+      cloudHistory.forEach((r) => { const d = dateToBrazilYMD(r.date); (byDayBr[d] = byDayBr[d] || []).push(r); });
+      Object.values(byDayBr).forEach((g) => { if (g.length < 2) return; g.sort((a,b) => String(b.date).localeCompare(String(a.date))); g.slice(1).forEach((r) => sbRequest("DELETE","history",null,`?id=eq.${r.id}&user_id=eq.${SB_USER}`)); });
+    }
+
+    // Transacciones — agregar las que faltan localmente
+    if (cloudTxs?.length) {
+      const localIds = new Set(state.transactions.map((t) => t.id));
+      const newTxs = cloudTxs
+        .filter((r) => !localIds.has(r.id))
+        .map((r) => ({ id: r.id, ticker: r.ticker, date: r.date, type: r.type, qty: Number(r.qty), price: Number(r.price), fx: r.fx ? Number(r.fx) : null, source: r.source }));
+      if (newTxs.length) { state.transactions = [...state.transactions, ...newTxs]; changed = true; }
+    }
+
+    // Portfolio — la nube es siempre fuente de verdad.
+    // Reemplazamos el portfolio local completo con el de la nube, preservando
+    // el campo `price` (cotización en vivo) si ya lo teníamos localmente.
+    if (cloudPortfolio?.length) {
+      const localPriceById = Object.fromEntries(state.portfolio.map((p) => [p.id, p.price ?? ""]));
+      const cloudMapped = cloudPortfolio.map((r) => ({
+        id: r.id, ticker: r.ticker, broker: r.broker ?? "",
+        quantity: Number(r.quantity),
+        avgCost: r.avg_cost ? Number(r.avg_cost) : null,
+        avgCostBrl: r.avg_cost_brl ? Number(r.avg_cost_brl) : null,
+        saldo: Number(r.saldo),
+        price: localPriceById[r.id] ?? "",
+      }));
+      // Solo marcamos como changed si algo realmente difiere (evita re-renders innecesarios)
+      const differs = cloudMapped.some((cp) => {
+        const lp = state.portfolio.find((p) => p.id === cp.id);
+        return !lp || lp.quantity !== cp.quantity || lp.avgCost !== cp.avgCost || lp.avgCostBrl !== cp.avgCostBrl;
+      }) || cloudMapped.length !== state.portfolio.length;
+      if (differs) { state.portfolio = cloudMapped; changed = true; }
+    }
+
+    // Splits — deduplicar por contenido (ticker+date+ratio) además de por ID.
+    // Si el mismo split fue creado en dos dispositivos con UIDs distintos, ambos llegarían
+    // a la nube. Al hacer pull, filtramos por contenido para no agregar duplicados localmente.
+    if (cloudSplits?.length) {
+      const splitKey = (s) => `${s.ticker}|${String(s.date).slice(0, 10)}|${Number(s.ratio)}`;
+      const existingSplits = state.splits || [];
+      const localKeys = new Set(existingSplits.map(splitKey));
+      const localIds = new Set(existingSplits.map((s) => s.id));
+      const newSplits = cloudSplits
+        .filter((r) => !localIds.has(r.id) && !localKeys.has(splitKey({ ticker: r.ticker, date: r.date, ratio: Number(r.ratio) })))
+        .map((r) => ({ id: r.id, ticker: r.ticker, date: r.date, ratio: Number(r.ratio) }));
+      if (newSplits.length) { state.splits = [...existingSplits, ...newSplits]; changed = true; }
+
+      // También deduplicar el estado local por si ya había duplicados de antes del fix
+      const seenKeys = new Set();
+      const dedupedLocal = (state.splits || []).filter((s) => {
+        const k = splitKey(s);
+        if (seenKeys.has(k)) return false;
+        seenKeys.add(k);
+        return true;
+      });
+      if (dedupedLocal.length !== (state.splits || []).length) {
+        state.splits = dedupedLocal;
+        changed = true;
+      }
+    }
+
+    // Settings — claves API y configuración (la nube gana si hay un valor y local está vacío)
+    if (cloudSettings?.length) {
+      const settingsMap = Object.fromEntries(cloudSettings.map((s) => [s.key, s.value]));
+      let settingsChanged = false;
+      try {
+        if (settingsMap["finnhub-key"] && !localStorage.getItem("pnl-finnhub-key")) {
+          localStorage.setItem("pnl-finnhub-key", settingsMap["finnhub-key"]); settingsChanged = true;
+        }
+        if (settingsMap["twelvedata-key"] && !localStorage.getItem("pnl-twelvedata-key")) {
+          localStorage.setItem("pnl-twelvedata-key", settingsMap["twelvedata-key"]); settingsChanged = true;
+        }
+        if (settingsMap["fx"] && !localStorage.getItem("pnl-fx")) {
+          localStorage.setItem("pnl-fx", settingsMap["fx"]); settingsChanged = true;
+        }
+        if (settingsMap["dividend-tax"] && !localStorage.getItem("pnl-dividend-tax")) {
+          localStorage.setItem("pnl-dividend-tax", settingsMap["dividend-tax"]); settingsChanged = true;
+        }
+      } catch (_) {}
+      if (settingsChanged) changed = true;
+    }
+
+    if (changed) {
+      persistHistory();
+      persistTransactions();
+      persistPortfolio(true); // skipCloud=true: ya vino de la nube, no re-subir
+      persistSplits();
+      resetHojeState();
+      resetPosicoesState();
+      resetHistoricoState();
+      render();
+      console.log("[supabase] Sincronización completada — datos actualizados desde la nube");
+    }
+  } catch (e) {
+    console.warn("[supabase] Error al sincronizar desde la nube:", e);
+  }
+}
+
+// ── Web Push — registro y envío de notificaciones ───────────────────────────
+
+const VAPID_PUBLIC_KEY = "BJ0ABOIgn6bCsqbafISxwVjqaVxSoKHcU28zFlsU5IYgJehTd6ED9d9Ls4n6SyTk7gk2oaox25aCjaFVzsB5jO4";
+
+function urlB64ToUint8Array(base64String) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = atob(base64);
+  return Uint8Array.from([...rawData].map((c) => c.charCodeAt(0)));
+}
+
+async function registerPushSubscription() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlB64ToUint8Array(VAPID_PUBLIC_KEY),
+      });
+    }
+    const j = sub.toJSON();
+    await sbRequest("POST", "push_subscriptions", [{
+      user_id: SB_USER,
+      endpoint: j.endpoint,
+      p256dh: j.keys.p256dh,
+      auth: j.keys.auth,
+    }], "?on_conflict=endpoint");
+    console.log("[push] Suscripción registrada en Supabase");
+  } catch (e) {
+    console.warn("[push] No se pudo registrar:", e);
+  }
+}
+
+async function sendPushNotification(title, body, tag = "pnl") {
+  try {
+    await fetch(`${SUPABASE_URL}/functions/v1/send-push`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SUPABASE_ANON_KEY}` },
+      body: JSON.stringify({ title, body, tag, user_id: SB_USER }),
+    });
+  } catch (e) {
+    console.warn("[push] Error al enviar notificación:", e);
+  }
+}
+
+async function requestPushPermission() {
+  if (!("Notification" in window)) return "unsupported";
+  if (Notification.permission === "granted") { await registerPushSubscription(); return "granted"; }
+  if (Notification.permission === "denied") return "denied";
+  const result = await Notification.requestPermission();
+  if (result === "granted") await registerPushSubscription();
+  return result;
+}
+
+// Sube TODO el estado local a la nube (úsalo la primera vez para "sembrar" Supabase)
+async function syncPushAllToCloud() {
+  const p = state.posicoes;
+
+  // Si hay cambios no guardados en posicoes (posicoes.dirty), sincronizamos rows → portfolio
+  // ANTES de subir a la nube para que la cantidad de acciones siempre sea la más reciente.
+  // Esto evita el caso donde el usuario agregó una transacción (que actualiza rows en memoria)
+  // pero nunca tocó "Guardar posiciones" — sin esto, la nube recibiría las cantidades viejas.
+  if (p?.dirty && p?.rows?.length) {
+    const cleaned = p.rows
+      .filter((r) => String(r.ticker).trim())
+      .map((r) => ({
+        ...r,
+        ticker: String(r.ticker).trim().toUpperCase(),
+        broker: String(r.broker).trim(),
+        quantity: parseNum(r.quantity),
+        price: parseNum(r.price) || 0,
+        saldo: Math.round(rowEffectiveValue(r) * 100) / 100,
+      }));
+    state.portfolio = cleaned;
+    try { localStorage.setItem("pnl-portfolio", JSON.stringify(state.portfolio)); } catch (_) {}
+    p.rows = cleaned.map((r) => ({ ...r }));
+    p.dirty = false;
+  }
+
+  const portfolioToUpload = p?.rows?.length ? p.rows : state.portfolio;
+
+  const settings = [
+    { key: "finnhub-key", user_id: SB_USER, value: p?.finnhubKey || "" },
+    { key: "twelvedata-key", user_id: SB_USER, value: p?.apiKey || "" },
+    { key: "fx", user_id: SB_USER, value: JSON.stringify(parseNum(p?.fxRateInput) || null) },
+    { key: "dividend-tax", user_id: SB_USER, value: p?.dividendTaxPct ?? "30" },
+  ].filter((s) => s.value && s.value !== "null" && s.value !== '""');
+
+  await Promise.all([
+    sbUpsertHistory(state.history),
+    sbUpsertTransactions(state.transactions),
+    sbUpsertPortfolio(portfolioToUpload),
+    sbUpsertSplits(state.splits || []),
+    settings.length ? sbRequest("POST", "settings", settings, "?on_conflict=user_id,key") : Promise.resolve(),
+  ]);
+  console.log("[supabase] Push completo — todos los datos locales subidos a la nube");
+}
+
+
 
 loadState();
 resetHojeState();
@@ -3300,6 +4466,125 @@ resetPosicoesState();
 resetHistoricoState();
 render();
 startAutoSaveWatcher();
+// autoFillHistoryGaps() deshabilitado: con Supabase el historial completo vive en la nube.
+// Correrlo automáticamente al abrir causaba corrupción de la app al intentar guardar
+// 1500+ entradas en localStorage. El historial se actualiza manualmente con "Importar histórico real".
+startAutoRefresh();
+
+// Al abrir: solo bajamos de la nube si hay datos más recientes.
+// NO subimos automáticamente al abrir — eso causaba que una versión vieja de la app
+// (cacheada por el Service Worker) pisara los datos correctos en la nube cada vez que
+// se abría la app en cualquier dispositivo. El push solo ocurre cuando el usuario
+// toca explícitamente "Subir todo a la nube".
+syncPullFromCloud();
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  INSTRUCCIONES DE INTEGRACIÓN
+//  Buscar en index.html el bloque que dice:
+//
+//    // Eliminamos el Service Worker — causaba que versiones viejas…
+//    if ("serviceWorker" in navigator) {
+//      navigator.serviceWorker.getRegistrations().then(…)
+//    }
+//
+//  Reemplazarlo COMPLETAMENTE por este bloque:
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Registro del Service Worker ──────────────────────────────────────────────
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("./sw.js", { scope: "./" })
+    .then((reg) => {
+      console.log("[sw] Registrado. Scope:", reg.scope);
+
+      // Detectar cuando hay un nuevo SW instalándose
+      reg.addEventListener("updatefound", () => {
+        const newSW = reg.installing;
+        if (!newSW) return;
+
+        newSW.addEventListener("statechange", () => {
+          // "installed" + controlador previo = nueva versión lista para activar
+          if (newSW.state === "installed" && navigator.serviceWorker.controller) {
+            showUpdateBanner();
+          }
+        });
+      });
+    })
+    .catch((err) => {
+      console.warn("[sw] Error al registrar:", err);
+    });
+
+  // Si el SW tomó el control después de una actualización (skipWaiting),
+  // recargar para que la página nueva se sirva en esta pestaña también.
+  let refreshing = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (refreshing) return;
+    refreshing = true;
+    // Solo recargamos si el usuario ya apretó "Actualizar" en el banner.
+    // Para no recargar involuntariamente al abrir la app por primera vez,
+    // chequeamos si el banner estaba visible.
+    if (document._swUpdateBannerShown) {
+      window.location.reload();
+    }
+  });
+}
+
+// ── Banner "Nueva versión disponible" ────────────────────────────────────────
+// Aparece en la parte inferior de la pantalla cuando hay una actualización lista.
+// El usuario decide cuándo recargar — nunca se hace de forma automática.
+function showUpdateBanner() {
+  if (document.getElementById("sw-update-banner")) return; // no duplicar
+  document._swUpdateBannerShown = true;
+
+  const banner = document.createElement("div");
+  banner.id = "sw-update-banner";
+  banner.style.cssText = [
+    "position:fixed",
+    "bottom:20px",
+    "left:50%",
+    "transform:translateX(-50%)",
+    "background:var(--accent-gold)",
+    "color:var(--on-accent)",
+    "padding:11px 20px",
+    "border-radius:24px",
+    "font-family:'Inter',sans-serif",
+    "font-size:13px",
+    "font-weight:600",
+    "z-index:9999",
+    "display:flex",
+    "align-items:center",
+    "gap:12px",
+    "box-shadow:0 4px 20px rgba(0,0,0,0.4)",
+    "cursor:default",
+    "white-space:nowrap",
+  ].join(";");
+
+  banner.innerHTML = `
+    <span>↑ Nueva versión disponible</span>
+    <button
+      onclick="document._swUpdateBannerShown=true; navigator.serviceWorker.getRegistration().then(r=>r&&r.waiting&&r.waiting.postMessage({type:'SKIP_WAITING'})); this.closest('#sw-update-banner').remove();"
+      style="background:rgba(0,0,0,0.18);border:none;color:inherit;font:inherit;
+             padding:5px 14px;border-radius:14px;cursor:pointer;font-size:12px;font-weight:700">
+      Actualizar
+    </button>
+    <button
+      onclick="this.closest('#sw-update-banner').remove()"
+      aria-label="Cerrar"
+      style="background:none;border:none;color:inherit;font-size:16px;cursor:pointer;
+             padding:0 2px;line-height:1;opacity:.7">
+      ✕
+    </button>
+  `;
+
+  document.body.appendChild(banner);
+}
+
+// ── Recibir la señal SKIP_WAITING desde el banner ────────────────────────────
+// El SW escucha este mensaje para activarse de inmediato cuando el usuario
+// aprieta "Actualizar" (en vez de esperar a que cierre todas las pestañas).
+// Esto ya está manejado en sw.js con self.skipWaiting() en el install,
+// pero el postMessage es el canal para forzarlo desde la página si fuera necesario.
+// (La línea de abajo va en sw.js, ya incluida — se deja aquí solo como referencia)
+// self.addEventListener("message", (e) => { if (e.data?.type === "SKIP_WAITING") self.skipWaiting(); });
 
 </script>
 </body>
