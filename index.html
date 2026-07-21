@@ -4150,7 +4150,17 @@ async function sbUpsertHistory(entries) {
 
 async function sbUpsertTransactions(txs) {
   if (!txs.length) return;
-  const rows = txs.map((t) => ({
+  // Defensivo: si el array trae el mismo "id" dos veces (nunca debería pasar, pero puede
+  // quedar de una corrupción vieja de datos), Postgres rechaza TODO el lote con el error
+  // 21000 ("ON CONFLICT DO UPDATE command cannot affect row a second time") apenas ve un id
+  // repetido dentro de una misma petición. Nos quedamos con una sola copia de cada id.
+  const seenIds = new Set();
+  const deduped = txs.filter((t) => {
+    if (seenIds.has(t.id)) return false;
+    seenIds.add(t.id);
+    return true;
+  });
+  const rows = deduped.map((t) => ({
     id: t.id, user_id: SB_USER, ticker: t.ticker, date: t.date,
     type: t.type, qty: t.qty, price: t.price, fx: t.fx ?? null, source: t.source ?? null,
     broker: t.broker ?? "",
