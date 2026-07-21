@@ -3023,7 +3023,7 @@ function parseFlexibleDate(raw) {
     const month = parseInt(m[2], 10);
     const year = parseInt(m[3], 10);
     if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
-      const d = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+      const d = new Date(Date.UTC(year, month - 1, day));
       if (!isNaN(d.getTime())) return d;
     }
   }
@@ -4153,6 +4153,7 @@ async function sbUpsertTransactions(txs) {
   const rows = txs.map((t) => ({
     id: t.id, user_id: SB_USER, ticker: t.ticker, date: t.date,
     type: t.type, qty: t.qty, price: t.price, fx: t.fx ?? null, source: t.source ?? null,
+    broker: t.broker ?? "",
   }));
   await sbRequest("POST", "transactions", rows, "?on_conflict=id");
 }
@@ -4269,7 +4270,7 @@ async function syncPullFromCloud() {
       const localIds = new Set(state.transactions.map((t) => t.id));
       const newTxs = cloudTxs
         .filter((r) => !localIds.has(r.id))
-        .map((r) => ({ id: r.id, ticker: r.ticker, date: r.date, type: r.type, qty: Number(r.qty), price: Number(r.price), fx: r.fx ? Number(r.fx) : null, source: r.source }));
+        .map((r) => ({ id: r.id, ticker: r.ticker, date: r.date, type: r.type, qty: Number(r.qty), price: Number(r.price), fx: r.fx ? Number(r.fx) : null, source: r.source, broker: r.broker ?? "" }));
       if (newTxs.length) { state.transactions = [...state.transactions, ...newTxs]; changed = true; }
     }
 
