@@ -310,6 +310,14 @@ const todayYMD = () => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 };
 
+// Devuelve 'YYYY-MM-DD' desplazado `days` días calendario respecto de `ymd` (días negativos van
+// hacia atrás). Se usa para construir ventanas de búsqueda alrededor de una fecha dada.
+const shiftDateDays = (ymd, days) => {
+  const d = new Date(`${ymd}T12:00:00`);
+  d.setDate(d.getDate() + days);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+
 const isHolidayToday = () => US_MARKET_HOLIDAYS.has(todayYMD());
 const isMarketClosedToday = () => isWeekend() || isHolidayToday();
 const marketClosedReason = () => (isWeekend() ? "es fin de semana" : "es feriado bursátil en EE. UU.");
@@ -1440,6 +1448,11 @@ function renderHoje() {
       <div class="card upload-card">
         ${h.error ? `<div class="banner banner-warn">${icon("alert-triangle", 15)} ${escapeHtml(h.error)}</div>` : ""}
         ${isMarketClosedToday() ? `<div class="banner banner-warn">${icon("alert-triangle", 15)} Hoy ${marketClosedReason()}: el mercado está cerrado. La búsqueda automática traería el último cierre disponible, no el de hoy.</div>` : ""}
+        ${
+          isPastAutoSaveTime() && !isMarketClosedToday() && !(state.posicoes.apiKey || "").trim()
+            ? `<div class="banner banner-warn">${icon("alert-triangle", 15)} Ya pasaron las ${AUTO_SAVE_HOUR_BRAZIL}:00 pero falta tu clave de Twelve Data (pestaña Posiciones): sin ella no se puede calcular el cambio USD/BRL, así que el guardado automático de hoy está en espera. Configúrala o usa "Buscar variación automáticamente" abajo (quedará con cambio en 0 si sigue sin clave).</div>`
+            : ""
+        }
         <div class="banner banner-ok">${icon("check-circle", 15)} A partir de las ${AUTO_SAVE_HOUR_BRAZIL}:00 (hora de Brasil) la app calcula y guarda el resultado de hoy automáticamente en el historial, sin necesidad de tocar nada. Las opciones de abajo solo muestran una vista previa, sin guardar nada.</div>
         ${icon("camera", 28, "muted")}
         <p class="upload-text">Mira la variación de hoy buscando las cotizaciones automáticamente, pegando los números que ya tienes, o llenando manualmente.</p>
@@ -1611,16 +1624,46 @@ async function fetchLiveDayChange(opts = {}) {
   })();
 
   // USD/BRL via Twelve Data — just 1 symbol, far under its free per-minute limit.
+  // Nota: el endpoint /quote no siempre trae "percent_change" para pares de forex en el plan
+  // gratis (a veces vuelve vacío o null), lo que antes hacía que el cambio USD/BRL quedara
+  // guardado como 0,00 sin avisar. Ahora, si /quote no trae el porcentaje, se calcula a mano
+  // con el precio actual (/price) contra el cierre del día hábil anterior (/time_series), que
+  // es un cálculo equivalente pero no depende de ese campo específico.
   const fxPromise = (async () => {
-    if (!twelveKey) { errors.push("Sin clave de Twelve Data: no se buscó la variación del cambio."); return; }
+    if (!twelveKey) { errors.push("Sin clave de Twelve Data: no se buscó la variación del cambio (el registro de hoy quedará con cambio USD/BRL en 0)."); return; }
     try {
       const url = `https://api.twelvedata.com/quote?symbol=USD/BRL&apikey=${encodeURIComponent(twelveKey)}`;
       const resp = await fetch(url);
       const data = await resp.json();
       if (data && data.status === "error") { errors.push(data.message || "Error al buscar la variación del cambio en Twelve Data."); return; }
       const pct = parseFloat(data?.percent_change);
-      if (Number.isFinite(pct)) fxPct = pct;
-      else errors.push("Sin variación para USD/BRL.");
+      if (Number.isFinite(pct)) { fxPct = pct; return; }
+
+      // Fallback: calcular el % a mano con precio actual vs. cierre anterior.
+      const currentPrice = parseFloat(data?.close ?? data?.price);
+      const prevCloseFromQuote = parseFloat(data?.previous_close);
+      if (Number.isFinite(currentPrice) && Number.isFinite(prevCloseFromQuote) && prevCloseFromQuote > 0) {
+        fxPct = ((currentPrice - prevCloseFromQuote) / prevCloseFromQuote) * 100;
+        return;
+      }
+      if (Number.isFinite(currentPrice)) {
+        const end = todayYMD();
+        const start = shiftDateDays(end, -7); // ventana amplia para saltar fines de semana/feriados
+        const tsUrl = `https://api.twelvedata.com/time_series?symbol=USD/BRL&interval=1day&start_date=${start}&end_date=${end}&outputsize=10&apikey=${encodeURIComponent(twelveKey)}`;
+        const tsResp = await fetch(tsUrl);
+        const tsData = await tsResp.json();
+        const values = Array.isArray(tsData?.values) ? tsData.values : [];
+        const todayStr = end;
+        const prevClose = values
+          .map((v) => ({ d: String(v.datetime).slice(0, 10), close: parseFloat(v.close) }))
+          .filter((v) => v.d < todayStr && Number.isFinite(v.close))
+          .sort((a, b) => (a.d < b.d ? 1 : -1))[0]?.close;
+        if (Number.isFinite(prevClose) && prevClose > 0) {
+          fxPct = ((currentPrice - prevClose) / prevClose) * 100;
+          return;
+        }
+      }
+      errors.push("Sin variación para USD/BRL (Twelve Data no devolvió el % ni el cierre anterior).");
     } catch (err) {
       errors.push("No pude buscar la variación del cambio en Twelve Data (sin conexión).");
     }
@@ -3443,6 +3486,7 @@ function importPurchasesFile(file) {
 
       let matched = 0;
       let created = 0;
+      const mixedBrokerWarnings = new Set(); // tickers con varias corretoras donde el archivo no distingue broker
       const normBroker = (b) => String(b || "").trim().toLowerCase();
       pairsInFile.forEach(({ sym, broker }) => {
         const effectiveBroker = hasBrokerCol && broker ? broker : undefined;
@@ -3488,10 +3532,26 @@ function importPurchasesFile(file) {
               ? rowsForTicker[0]
               : rowsForTicker.reduce((a, b) => (parseNum(b.quantity) > parseNum(a.quantity) ? b : a));
             if (targetRow) {
-              if (state.posicoes) {
-                state.posicoes.rows = state.posicoes.rows.map((r) => (r.id === targetRow.id ? { ...r, quantity: roundedQty } : r));
+              // netQty ya es el total COMBINADO de todas las corretoras para este ticker (el
+              // archivo no las distingue). Si el ticker tiene otras filas (otras corretoras)
+              // además de la dominante, esas cantidades YA están incluidas dentro de netQty —
+              // si se dejan intactas y además se le asigna el total completo a la fila
+              // dominante, ese ticker queda contado dos veces (una vez entero en la dominante,
+              // otra vez parcial en las demás), inflando el valor total de la cartera. Por eso
+              // se le asigna a la dominante solo el RESTO: netQty menos lo que ya tienen las
+              // otras filas de ese mismo ticker, para que la suma de todas las filas siga
+              // siendo exactamente netQty.
+              const otherRowsQty = rowsForTicker
+                .filter((r) => r.id !== targetRow.id)
+                .reduce((s, r) => s + (parseNum(r.quantity) || 0), 0);
+              const dominantQty = Math.max(0, Math.round((netQty - otherRowsQty) * 100000) / 100000);
+              if (otherRowsQty > 0.0001 && dominantQty < roundedQty - 0.0001) {
+                mixedBrokerWarnings.add(sym);
               }
-              state.portfolio = state.portfolio.map((r) => (r.id === targetRow.id ? { ...r, quantity: roundedQty } : r));
+              if (state.posicoes) {
+                state.posicoes.rows = state.posicoes.rows.map((r) => (r.id === targetRow.id ? { ...r, quantity: dominantQty } : r));
+              }
+              state.portfolio = state.portfolio.map((r) => (r.id === targetRow.id ? { ...r, quantity: dominantQty } : r));
             }
           }
         }
@@ -3512,6 +3572,13 @@ function importPurchasesFile(file) {
         : dividendsImported
         ? `Se importaron ${dividendsImported} dividendo(s).`
         : null;
+      if (mixedBrokerWarnings.size) {
+        const list = [...mixedBrokerWarnings].join(", ");
+        state.posicoes.quotesError = [
+          ...(state.posicoes.quotesError || []),
+          `Este archivo no tiene columna "broker" y ${list} está(n) repartido(s) en más de una corretora en tu carteira: la cantidad se ajustó para no duplicar el total, pero revisa esas posiciones — si tus corretoras cambiaron, puede que la cantidad asignada a cada fila ya no sea exacta.`,
+        ];
+      }
       render();
     } catch (err) {
       p.quotesError = ["No pude leer ese CSV. Revisa que tenga las columnas symbol, date, type, qty, price (formato de TradingView)."];
@@ -4019,6 +4086,12 @@ async function maybeAutoSaveToday() {
   const finnhubKey = (state.posicoes.finnhubKey || "").trim();
   const twelveKey = (state.posicoes.apiKey || "").trim();
   if (!finnhubKey && !twelveKey) return; // sin claves configuradas no hay cómo calcular nada
+  // La clave de Twelve Data es obligatoria para el guardado AUTOMÁTICO: sin ella el cambio
+  // USD/BRL no se puede calcular y antes el registro se guardaba igual con "cambio: 0,00",
+  // quedando incorrecto para siempre en el historial (ver tarjeta "Registros"). Si falta,
+  // se espera al siguiente ciclo en vez de guardar un dato parcial/erróneo. El usuario
+  // siempre puede guardar manualmente desde "Hoy" si de verdad quiere omitir el cambio.
+  if (!twelveKey) return;
 
   autoSaveInProgress = true;
   try {
