@@ -1156,6 +1156,11 @@ function resetHistoricoState() {
     cdiStatus: "idle",
     cdiPct: null,
     cdiError: null,
+    // Cachea el resultado de "Comparar con S&P 500/CDI" por período (ej. "2023", "2024") para
+    // años ya finalizados: una vez calculado, no hace falta tocar el botón de nuevo al volver
+    // a esa pestaña — ver comparisonCache más abajo.
+    spxCache: {},
+    cdiCache: {},
     periodFilter: "all",
     importFromDate: defaultFrom,
     importToDate: todayYMD(),
@@ -1191,8 +1196,10 @@ async function compareSpx() {
     const last = parseFloat(byDate[byDate.length - 1].close);
     if (!first) throw new Error("Dato inválido");
     hs.spxPct = ((last - first) / first) * 100;
+    hs.spxCache[hs.periodFilter] = { pct: hs.spxPct, error: null };
   } catch (err) {
     hs.spxError = err.message || "No pude comparar con el S&P 500 (sin conexión).";
+    hs.spxCache[hs.periodFilter] = { pct: null, error: hs.spxError };
   }
   hs.spxStatus = "idle";
   render();
@@ -1223,8 +1230,10 @@ async function compareCdi() {
       if (Number.isFinite(v)) factor *= 1 + v / 100;
     });
     hs.cdiPct = (factor - 1) * 100;
+    hs.cdiCache[hs.periodFilter] = { pct: hs.cdiPct, error: null };
   } catch (err) {
     hs.cdiError = "No pude buscar el CDI automáticamente (puede ser un bloqueo de CORS del navegador a la API del Banco Central).";
+    hs.cdiCache[hs.periodFilter] = { pct: null, error: hs.cdiError };
   }
   hs.cdiStatus = "idle";
   render();
@@ -1559,7 +1568,11 @@ function renderHojeReviewResult() {
 
   return `<div class="card">
     ${errorBanner}
-    <div class="card-title-row"><h2 class="card-title">Variación del día por activo</h2>${headerExtra}</div>
+    <div class="card-title-row">
+      <h2 class="card-title">Variación del día por activo</h2>
+      <span class="small muted" style="margin-left:auto">${state.posicoes.quotesUpdatedAt ? `Actualizado ${fmtFullDate(state.posicoes.quotesUpdatedAt)}` : "aún no actualizado"}</span>
+      ${headerExtra}
+    </div>
     ${tableHtml}
     ${footer}
   </div>`;
@@ -2059,42 +2072,7 @@ function renderBreakdown(rows) {
   rows.forEach((r) => { byTicker[r.ticker||"—"] = (byTicker[r.ticker||"—"]||0) + rowEffectiveValue(r); });
   const items = Object.entries(byTicker).sort((a,b)=>b[1]-a[1]).map(([ticker,value])=>({ ticker, value, pct: (value/total)*100 }));
 
-  // Layout: dos filas. Fila 1 = activos grandes (>10%), Fila 2 = activos chicos (<10%)
-  // Dentro de cada fila, los rectángulos se distribuyen horizontalmente por peso.
-  const BIG = items.filter(i=>i.pct>=8);
-  const SMALL = items.filter(i=>i.pct<8);
-  const W = 100; // porcentaje
-  const H1 = SMALL.length ? 65 : 100; // altura fila 1 en %
-  const H2 = 100 - H1;
-  const GAP = 0.8;
-
-  function rowCells(arr, yPct, hPct) {
-    const rowTotal = arr.reduce((s,i)=>s+i.value,0);
-    let cx = 0;
-    return arr.map(item => {
-      const w = (item.value/rowTotal)*100;
-      const x = cx + GAP/2;
-      const cellW = w - GAP;
-      const y = yPct + GAP/2;
-      const cellH = hPct - GAP;
-      cx += w;
-      const color = avatarColor(item.ticker);
-      const midX = x + cellW/2;
-      const midY = y + cellH/2;
-      // Mostrar label si hay espacio suficiente (aprox >7% ancho y >20% alto)
-      const showLabel = cellW > 8 && cellH > 20;
-      const showPct = cellW > 10 && cellH > 30;
-      return `<g>
-        <rect x="${x.toFixed(2)}%" y="${y.toFixed(2)}%" width="${Math.max(0,cellW).toFixed(2)}%" height="${Math.max(0,cellH).toFixed(2)}%" rx="6" fill="${color}"/>
-        ${showLabel?`<text x="${midX.toFixed(2)}%" y="${(midY-(showPct?4:0)).toFixed(2)}%" text-anchor="middle" dominant-baseline="central" font-family="Inter,sans-serif" font-size="12" font-weight="700" fill="#fff" style="text-shadow:0 1px 3px rgba(0,0,0,.4)">${escapeHtml(item.ticker)}</text>`:""}
-        ${showPct?`<text x="${midX.toFixed(2)}%" y="${(midY+10).toFixed(2)}%" text-anchor="middle" dominant-baseline="central" font-family="Inter,sans-serif" font-size="10" fill="rgba(255,255,255,.75)">${item.pct.toFixed(1)}%</text>`:""}
-      </g>`;
-    }).join("");
-  }
-
-  const cells = rowCells(BIG, 0, H1) + (SMALL.length ? rowCells(SMALL, H1, H2) : "");
-
-  // Lista compacta
+  // Lista compacta (barras horizontales con el % de cada activo)
   const listRows = items.map(i=>`<div class="breakdown-row">
     <div class="breakdown-label" style="display:flex;align-items:center;gap:6px">
       <span style="width:9px;height:9px;border-radius:2px;background:${avatarColor(i.ticker)};flex-shrink:0;display:inline-block"></span>${escapeHtml(i.ticker)}
@@ -2105,7 +2083,6 @@ function renderBreakdown(rows) {
 
   return `<div class="card">
     <h2 class="card-title">Distribución de la cartera</h2>
-    <svg viewBox="0 0 100 100" preserveAspectRatio="none" width="100%" height="160" style="border-radius:10px;overflow:hidden;display:block;margin-bottom:14px">${cells}</svg>
     ${listRows}
   </div>`;
 }
@@ -3905,16 +3882,36 @@ function handleAction(action, el) {
     case "compare-cdi": compareCdi(); break;
     case "toggle-records-expanded": state.historico.recordsExpanded = !state.historico.recordsExpanded; render(); break;
     case "toggle-monthly-expanded": state.historico.monthlyExpanded = !state.historico.monthlyExpanded; render(); break;
-    case "set-period":
+    case "set-period": {
       state.historico.periodFilter = el.dataset.period;
-      // El resultado de "Comparar con S&P 500/CDI" quedó calculado para el período ANTERIOR;
-      // se limpia para que no parezca que ya compara el período nuevo sin haber tocado el botón.
-      state.historico.spxPct = null;
-      state.historico.spxError = null;
-      state.historico.cdiPct = null;
-      state.historico.cdiError = null;
+      const hs = state.historico;
+      const period = hs.periodFilter;
+      const currentYear = new Date().getFullYear();
+      // Un año ya finalizado (ej. "2023") es un período FIJO que no cambia con el tiempo, a
+      // diferencia de "Este año" o "Todo" — así que su comparación contra S&P 500/CDI se puede
+      // guardar en caché y mostrar de una sola vez, sin depender de tocar el botón cada vez.
+      const isFinishedPastYear = /^\d{4}$/.test(period) && Number(period) < currentYear;
+      if (isFinishedPastYear && hs.spxCache[period]) {
+        hs.spxPct = hs.spxCache[period].pct;
+        hs.spxError = hs.spxCache[period].error;
+      } else {
+        hs.spxPct = null;
+        hs.spxError = null;
+      }
+      if (isFinishedPastYear && hs.cdiCache[period]) {
+        hs.cdiPct = hs.cdiCache[period].pct;
+        hs.cdiError = hs.cdiCache[period].error;
+      } else {
+        hs.cdiPct = null;
+        hs.cdiError = null;
+      }
       render();
+      if (isFinishedPastYear) {
+        if (!hs.spxCache[period]) compareSpx();
+        if (!hs.cdiCache[period]) compareCdi();
+      }
       break;
+    }
     case "cancel-entry-edit": cancelEditEntry(); break;
     case "save-entry-edit": saveEntryEdit(); break;
     case "clear-history": clearHistoryAction(); break;
