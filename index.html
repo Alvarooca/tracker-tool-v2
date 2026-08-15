@@ -1181,7 +1181,7 @@ async function compareSpx() {
   try {
     const start = periodFiltered[0].date.slice(0, 10);
     const end = periodFiltered[periodFiltered.length - 1].date.slice(0, 10);
-    const url = `https://api.twelvedata.com/time_series?symbol=SPY&interval=1day&start_date=${start}&end_date=${end}&apikey=${encodeURIComponent(twelveKey)}`;
+    const url = `https://api.twelvedata.com/time_series?symbol=SPY&interval=1day&start_date=${start}&end_date=${end}&outputsize=5000&apikey=${encodeURIComponent(twelveKey)}`;
     const resp = await fetch(url);
     const data = await resp.json();
     if (data && data.status === "error") throw new Error(data.message || "Error en Twelve Data");
@@ -2838,7 +2838,7 @@ async function importRealHistory() {
       h.importProgressLabel = chunks.length > 1 ? `Buscando histórico — grupo ${i + 1}/${chunks.length}…` : "Buscando histórico…";
       render();
       try {
-        const url = `https://api.twelvedata.com/time_series?symbol=${chunk.join(",")}&interval=1day&start_date=${h.fromDate}&end_date=${h.toDate}&apikey=${encodeURIComponent(twelveKey)}`;
+        const url = `https://api.twelvedata.com/time_series?symbol=${chunk.join(",")}&interval=1day&start_date=${h.fromDate}&end_date=${h.toDate}&outputsize=5000&apikey=${encodeURIComponent(twelveKey)}`;
         const resp = await fetch(url);
         const data = await resp.json();
         if (data && data.status === "error") {
@@ -3370,7 +3370,25 @@ function importPurchasesFile(file) {
       // así una reimportación no crea un duplicado por una diferencia de horario entre cómo
       // quedó guardada la transacción la primera vez y cómo se parsea ahora.
       const txKey = (t) => `${t.ticker}|${String(t.date).slice(0, 10)}|${t.type}|${t.qty.toFixed(4)}|${t.price.toFixed(4)}|${String(t.broker || "").trim().toLowerCase()}`;
+      // Clave SIN corretora: se usa para reconocer una transacción que ya estaba guardada de
+      // una importación ANTERIOR sin columna "broker" (todas quedaron con broker: ""), cuando
+      // ahora se reimporta el MISMO archivo pero ya con la corretora agregada. Sin esto, la
+      // clave completa (que sí incluye broker) no coincide con la guardada antes → se trataba
+      // como una transacción nueva y se duplicaba la cantidad de acciones de cada ticker.
+      const txKeyNoBroker = (t) => `${t.ticker}|${String(t.date).slice(0, 10)}|${t.type}|${t.qty.toFixed(4)}|${t.price.toFixed(4)}`;
       const existingKeys = new Set(state.transactions.map(txKey));
+      // Pool de transacciones YA guardadas sin corretora (broker vacío), agrupadas por su
+      // clave sin-broker, para poder "completarles" el broker en vez de duplicarlas. Se usa
+      // como cola por clave porque puede haber varias filas idénticas en la misma fecha.
+      const unbrokeredPool = new Map(); // noBrokerKey -> [index, index, ...] en state.transactions
+      state.transactions.forEach((t, i) => {
+        if (!String(t.broker || "").trim()) {
+          const k = txKeyNoBroker(t);
+          if (!unbrokeredPool.has(k)) unbrokeredPool.set(k, []);
+          unbrokeredPool.get(k).push(i);
+        }
+      });
+      let brokerFilledIn = 0;
       let fxBackfilledFromCsv = 0;
       let dividendsImported = 0;
       txs.forEach((cols) => {
@@ -3437,20 +3455,38 @@ function importPurchasesFile(file) {
         const brokerFromFile = idx.broker !== -1 ? (cols[idx.broker] || "").trim() : "";
         const rec = { ticker: sym, date, type, qty: adjQty, price: adjPrice, fx: fxFromFile, broker: brokerFromFile };
         const key = txKey(rec);
-        if (!existingKeys.has(key)) {
-          existingKeys.add(key);
-          state.transactions.push({ id: uid(), source: "csv", ...rec });
-          if (type === "dividend") dividendsImported++;
-        } else if (fxFromFile) {
-          // Esta transacción ya estaba guardada (de una importación anterior, posiblemente de
-          // un archivo sin la columna "fx") — si todavía no tenía el cambio histórico, se
-          // completa ahora con el de este archivo en vez de descartarlo.
-          const existingIdx = state.transactions.findIndex((t) => txKey(t) === key && !(typeof t.fx === "number" && t.fx > 0));
-          if (existingIdx !== -1) {
-            state.transactions[existingIdx] = { ...state.transactions[existingIdx], fx: fxFromFile };
-            fxBackfilledFromCsv++;
+        if (existingKeys.has(key)) {
+          // Ya estaba guardada exactamente así (mismo broker incluido) — solo completar el fx
+          // histórico si todavía faltaba, igual que antes.
+          if (fxFromFile) {
+            const existingIdx = state.transactions.findIndex((t) => txKey(t) === key && !(typeof t.fx === "number" && t.fx > 0));
+            if (existingIdx !== -1) {
+              state.transactions[existingIdx] = { ...state.transactions[existingIdx], fx: fxFromFile };
+              fxBackfilledFromCsv++;
+            }
+          }
+          return;
+        }
+        // No coincide con ninguna guardada con ESTE broker exacto. Antes de darla por nueva,
+        // ver si es la MISMA transacción que ya existe pero guardada sin corretora (de una
+        // importación anterior con un archivo que todavía no la traía) — en ese caso se le
+        // completa el broker en vez de crear una fila duplicada.
+        if (brokerFromFile) {
+          const noBrokerKey = txKeyNoBroker(rec);
+          const pool = unbrokeredPool.get(noBrokerKey);
+          if (pool && pool.length) {
+            const idxToUpdate = pool.shift();
+            const prev = state.transactions[idxToUpdate];
+            state.transactions[idxToUpdate] = { ...prev, broker: brokerFromFile, fx: prev.fx ?? fxFromFile };
+            existingKeys.delete(txKey(prev));
+            existingKeys.add(txKey(state.transactions[idxToUpdate]));
+            brokerFilledIn++;
+            return;
           }
         }
+        existingKeys.add(key);
+        state.transactions.push({ id: uid(), source: "csv", ...rec });
+        if (type === "dividend") dividendsImported++;
       });
       persistTransactions();
 
@@ -3567,6 +3603,7 @@ function importPurchasesFile(file) {
           (created ? ` (${created} posición(es) nueva(s) creada(s) por corretora)` : "") +
           `.` +
           (dividendsImported ? ` Se importaron ${dividendsImported} dividendo(s).` : "") +
+          (brokerFilledIn ? ` Se completó la corretora de ${brokerFilledIn} transacción(es) que ya tenías guardadas sin ese dato (en vez de duplicarlas).` : "") +
           (fxBackfilledFromCsv ? ` Se completó el cambio histórico (columna "fx") de ${fxBackfilledFromCsv} transacción(es) que ya tenías guardadas.` : "") +
           (duplicatesRemoved ? ` Se eliminaron ${duplicatesRemoved} transacción(es) duplicada(s) (de una versión sin ajustar por un desdoblamiento).` : "")
         : dividendsImported
