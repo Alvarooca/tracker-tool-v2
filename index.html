@@ -282,6 +282,13 @@ const fmtShortDate = (iso) => {
   return d.toLocaleDateString("es", { day: "2-digit", month: "2-digit" });
 };
 
+// Igual que fmtShortDate pero incluyendo el año (dd/mm/aaaa) — se usa donde la fecha sin año
+// puede ser ambigua entre varios años, como en la lista de dividendos recibidos.
+const fmtDateWithYear = (iso) => {
+  const d = new Date(iso);
+  return d.toLocaleDateString("es", { day: "2-digit", month: "2-digit", year: "numeric" });
+};
+
 const fmtFullDate = (iso) => {
   const d = new Date(iso);
   return `${d.toLocaleDateString("es")} · ${d.toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit" })}`;
@@ -901,7 +908,7 @@ function resetPosicoesState() {
     missingDividends: [], // [{ ticker, date, perShare }] — pagos vistos en Finnhub que no están registrados
     dividendsExpanded: false,
     advancedExpanded: false,
-    txForm: { rowId: rows[0]?.id || "__new__", newTicker: "", newBroker: "", type: "buy", qty: "", price: "", date: todayYMD(), error: null, tickerSearchResults: [], tickerSearchStatus: "idle" },
+    txForm: { rowId: rows[0]?.id || "__new__", newTicker: "", newBroker: "", type: "buy", qty: "", price: "", fx: "", date: todayYMD(), error: null, tickerSearchResults: [], tickerSearchStatus: "idle" },
     splitForm: { ...splitFormDefaults, error: null },
     splitMessage: null,
     fxBackfillStatus: "idle",
@@ -1881,7 +1888,7 @@ function renderDividendsCard() {
       const hasFx = typeof t.fx === "number" && t.fx > 0;
       return `<tr>
         <td><div class="ticker-cell">${avatarHtml(t.ticker, state.posicoes?.logos?.[t.ticker], 20)}<b>${escapeHtml(t.ticker)}</b></div></td>
-        <td class="small">${fmtShortDate(t.date)}</td>
+        <td class="small">${fmtDateWithYear(t.date)}</td>
         <td class="num small">US$ ${net.toFixed(2)}${hasFx ? ` <span class="muted">(R$ ${(net * t.fx).toFixed(2)})</span>` : ""}</td>
       </tr>`;
     })
@@ -1894,7 +1901,7 @@ function renderDividendsCard() {
             ${p.missingDividends
               .map(
                 (m) =>
-                  `<li>${escapeHtml(m.ticker)} · ${fmtShortDate(m.date)} · US$ ${m.perShare.toFixed(4)}/acción
+                  `<li>${escapeHtml(m.ticker)} · ${fmtDateWithYear(m.date)} · US$ ${m.perShare.toFixed(4)}/acción
                     <button class="btn btn-ghost btn-sm" style="padding:2px 8px;margin-left:6px" data-action="quickadd-dividend" data-ticker="${escapeAttr(m.ticker)}" data-date="${escapeAttr(m.date.slice(0, 10))}" data-price="${m.perShare}">+ Agregar</button>
                   </li>`
               )
@@ -2207,7 +2214,11 @@ function renderPosicoes() {
             <input class="input-cell" inputmode="decimal" data-bind="txQty" placeholder="${txForm.type === "dividend" ? "Acciones" : "Cantidad"}" value="${escapeAttr(txForm.qty)}">
             <input class="input-cell" inputmode="decimal" data-bind="txPrice" placeholder="${txForm.type === "dividend" ? "US$/acción (bruto)" : "Precio US$"}" value="${escapeAttr(txForm.price)}">
           </div>
-          <input class="input-cell tx-date" type="date" data-bind="txDate" value="${escapeAttr(txForm.date)}" style="text-align:left">
+          <div class="tx-form-row">
+            <input class="input-cell tx-date" type="date" data-bind="txDate" value="${escapeAttr(txForm.date)}" style="text-align:left">
+            <input class="input-cell" inputmode="decimal" data-bind="txFx" placeholder="Cambio USD/BRL (opcional)" value="${escapeAttr(txForm.fx)}">
+          </div>
+          <p class="upload-hint" style="margin-top:-4px">Si dejás el cambio vacío: para hoy se usa el que tengas configurado arriba; para una fecha pasada, queda pendiente hasta que uses "Buscar cambios históricos".</p>
           ${
             txForm.type === "dividend"
               ? (() => {
@@ -3183,10 +3194,13 @@ function addTransaction() {
   if (!qty || qty <= 0) { f.error = "Ingresa una cantidad válida (mayor a 0)."; render(); return; }
   if ((f.type === "buy" || f.type === "dividend") && (!price || price <= 0)) { f.error = "Ingresa un precio válido (mayor a 0)."; render(); return; }
 
-  // Si la operación es de hoy, el cambio USD/BRL configurado arriba YA ES el cambio histórico
-  // correcto para esa fecha — se guarda directo en la transacción. Si es una fecha pasada, se
-  // deja en null y se completa después con "Buscar cambios históricos".
-  const fxForTx = f.date === todayYMD() ? parseNum(p.fxRateInput) || null : null;
+  // Si el usuario ingresó el cambio USD/BRL a mano en el formulario, se usa ese (sea la
+  // operación de hoy o de una fecha pasada). Si lo dejó vacío y la operación es de HOY, el
+  // cambio configurado arriba en Posiciones ya es el correcto para esa fecha. Si es una fecha
+  // pasada y no se ingresó nada, queda en null y se completa después con "Buscar cambios
+  // históricos".
+  const manualFx = parseNum(f.fx);
+  const fxForTx = manualFx || (f.date === todayYMD() ? parseNum(p.fxRateInput) || null : null);
 
   let ticker;
   if (f.rowId === "__new__") {
@@ -3230,6 +3244,7 @@ function addTransaction() {
 
   f.qty = "";
   f.price = "";
+  f.fx = "";
   f.newTicker = "";
   f.newBroker = "";
   f.tickerSearchResults = [];
@@ -4015,6 +4030,8 @@ root.addEventListener("input", (e) => {
     if (state.posicoes.txForm.type === "dividend") renderPreservingFocus();
   } else if (bind === "txDate") {
     state.posicoes.txForm.date = el.value;
+  } else if (bind === "txFx") {
+    state.posicoes.txForm.fx = el.value;
   } else if (bind === "dividendTaxPct") {
     state.posicoes.dividendTaxPct = el.value;
     persistQuotesCache();
