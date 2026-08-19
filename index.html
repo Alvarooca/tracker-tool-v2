@@ -517,14 +517,14 @@ function loadState() {
   } catch (_) {}
 }
 
-function persistTransactions() {
+function persistTransactions(skipCloud = false) {
   try { localStorage.setItem("pnl-transactions", JSON.stringify(state.transactions)); } catch (_) {}
-  sbUpsertTransactions(state.transactions); // fire-and-forget
+  if (!skipCloud) sbUpsertTransactions(state.transactions); // fire-and-forget
 }
 
-function persistSplits() {
+function persistSplits(skipCloud = false) {
   try { localStorage.setItem("pnl-splits", JSON.stringify(state.splits)); } catch (_) {}
-  sbUpsertSplits(state.splits || []); // fire-and-forget
+  if (!skipCloud) sbUpsertSplits(state.splits || []); // fire-and-forget
 }
 
 function persistPortfolio(skipCloud = false) {
@@ -532,7 +532,7 @@ function persistPortfolio(skipCloud = false) {
   if (!skipCloud) sbUpsertPortfolio(state.portfolio); // fire-and-forget
 }
 
-function persistHistory() {
+function persistHistory(skipCloud = false) {
   try {
     const sorted = [...state.history].sort((a, b) => new Date(b.date) - new Date(a.date));
     // Deduplicar por día (YYYY-MM-DD) — entradas reales ganan sobre day-* del backfill
@@ -565,7 +565,7 @@ function persistHistory() {
       localStorage.setItem("pnl-history", JSON.stringify(recent));
     } catch (_) {}
   }
-  sbUpsertHistory(state.history);
+  if (!skipCloud) sbUpsertHistory(state.history);
 }
 
 // Recalcula el precio promedio de compra de un ticker a partir de TODAS sus transacciones
@@ -4478,10 +4478,18 @@ async function syncPullFromCloud() {
     }
 
     if (changed) {
-      persistHistory();
-      persistTransactions();
-      persistPortfolio(true); // skipCloud=true: ya vino de la nube, no re-subir
-      persistSplits();
+      // skipCloud=true en las cuatro: estos datos ACABAN de llegar de la nube (recién
+      // fusionados), así que no hay nada nuevo que subir. Volver a subirlos (sbUpsert*) es, en
+      // el mejor caso, una llamada de red inútil — y en el peor, un riesgo real: si este
+      // dispositivo tenía en su localStorage una copia vieja con filas duplicadas (de antes de
+      // una limpieza manual en Supabase), un push automático aquí las resucitaría en la nube
+      // sin que el usuario haya tocado nada. Cada persist* solo debe subir a la nube cuando el
+      // usuario genera un cambio real (agregar/editar/importar), nunca como efecto colateral
+      // de simplemente sincronizar/leer datos que la nube ya tiene.
+      persistHistory(true);
+      persistTransactions(true);
+      persistPortfolio(true);
+      persistSplits(true);
       resetHojeState();
       resetPosicoesState();
       resetHistoricoState();
