@@ -3194,53 +3194,64 @@ function addTransaction() {
   if (!qty || qty <= 0) { f.error = "Ingresa una cantidad válida (mayor a 0)."; render(); return; }
   if ((f.type === "buy" || f.type === "dividend") && (!price || price <= 0)) { f.error = "Ingresa un precio válido (mayor a 0)."; render(); return; }
 
-  // Si el usuario ingresó el cambio USD/BRL a mano en el formulario, se usa ese (sea la
-  // operación de hoy o de una fecha pasada). Si lo dejó vacío y la operación es de HOY, el
-  // cambio configurado arriba en Posiciones ya es el correcto para esa fecha. Si es una fecha
-  // pasada y no se ingresó nada, queda en null y se completa después con "Buscar cambios
-  // históricos".
   const manualFx = parseNum(f.fx);
   const fxForTx = manualFx || (f.date === todayYMD() ? parseNum(p.fxRateInput) || null : null);
 
   let ticker;
+  let targetRowId = f.rowId;
+
   if (f.rowId === "__new__") {
     if (f.type === "dividend") { f.error = "Un dividendo se registra sobre una posición que ya existe. Selecciónala en \"Posición\"."; render(); return; }
     ticker = f.newTicker.trim().toUpperCase();
     if (!ticker) { f.error = "Ingresa el ticker de la nueva posición."; render(); return; }
-    if (f.type === "sell") { f.error = "No se puede vender algo que todavía no está en tu carteira. Agrégalo como compra primero."; render(); return; }
-    const newRow = { id: uid(), ticker, broker: f.newBroker.trim(), quantity: qty, avgCost: price, avgCostBrl: fxForTx ? price * fxForTx : null, price: "", saldo: 0 };
+    if (f.type === "sell") { f.error = "No se puede vender algo que todavía no está en tu cartera. Agrégalo como compra primero."; render(); return; }
+    
+    const newRowId = uid();
+    const newRow = { id: newRowId, ticker, broker: f.newBroker.trim(), quantity: qty, avgCost: price, avgCostBrl: fxForTx ? price * fxForTx : null, price: "", saldo: 0 };
     p.rows = [...p.rows, newRow];
-    p.dirty = true;
-    f.rowId = newRow.id;
+    state.portfolio = [...state.portfolio, newRow];
+    targetRowId = newRowId;
+    
     state.transactions.push({ id: uid(), source: "manual", ticker, date: new Date(`${f.date}T12:00:00`).toISOString(), type: f.type, qty, price, fx: fxForTx });
   } else {
     const row = p.rows.find((r) => r.id === f.rowId);
     if (!row) { f.error = "No encontré esa posición."; render(); return; }
     ticker = row.ticker;
     const oldQty = parseNum(row.quantity);
+    let newQty = oldQty;
+    
     if (f.type === "buy") {
-      row.quantity = oldQty + qty;
-      p.dirty = true;
+      newQty = oldQty + qty;
     } else if (f.type === "sell") {
       if (qty > oldQty + 0.0001) { f.error = `Esa posición solo tiene ${oldQty} unidades — no se puede vender ${qty}.`; render(); return; }
-      row.quantity = Math.max(oldQty - qty, 0);
-      p.dirty = true;
+      newQty = Math.max(oldQty - qty, 0);
     }
-    // El dividendo NO modifica row.quantity: es un ingreso, no cambia cuántas acciones tienes.
-    state.transactions.push({ id: uid(), source: "manual", ticker: row.ticker, date: new Date(`${f.date}T12:00:00`).toISOString(), type: f.type, qty, price: price || row.avgCost || 0, fx: fxForTx });
+    
+    // Actualizar la cantidad en la vista (p.rows) y en el estado global (state.portfolio)
+    p.rows = p.rows.map((r) => (r.id === f.rowId ? { ...r, quantity: newQty } : r));
+    state.portfolio = state.portfolio.map((r) => (r.id === f.rowId ? { ...r, quantity: newQty } : r));
+    
+    state.transactions.push({ 
+      id: uid(), 
+      source: "manual", 
+      ticker: row.ticker, 
+      date: new Date(`${f.date}T12:00:00`).toISOString(), 
+      type: f.type, 
+      qty, 
+      price: price || row.avgCost || 0, 
+      fx: fxForTx 
+    });
   }
+  
   persistTransactions();
 
-  // El precio promedio (en US$ y, si hay datos suficientes, en R$) se recalcula siempre a
-  // partir de TODO el historial de transacciones, con el método de costo promedio. Se aplica
-  // solo a la fila donde se registró esta transacción (no a otras filas que compartan el mismo
-  // ticker en otra corretora, que pueden tener un costo real distinto no reflejado aquí).
-  // recomputeCostBasisFromTransactions ignora las filas "dividend" (solo mira buy/sell), así
-  // que registrar un dividendo nunca altera el precio promedio de compra.
-  // Nota: f.rowId ya fue reasignado al id real de la fila más arriba, aunque haya empezado en "__new__".
+  // Recalcular el costo promedio y actualizarlo en ambas partes
   const { avgCostUsd, avgCostBrl } = recomputeCostBasisFromTransactions(ticker);
-  p.rows = p.rows.map((r) => (r.id === f.rowId ? { ...r, avgCost: avgCostUsd, avgCostBrl } : r));
-  state.portfolio = state.portfolio.map((r) => (r.id === f.rowId ? { ...r, avgCost: avgCostUsd, avgCostBrl } : r));
+  p.rows = p.rows.map((r) => (r.id === targetRowId ? { ...r, avgCost: avgCostUsd, avgCostBrl } : r));
+  state.portfolio = state.portfolio.map((r) => (r.id === targetRowId ? { ...r, avgCost: avgCostUsd, avgCostBrl } : r));
+  
+  // Guardar definitivamente la cartera actualizada
+  persistPortfolio();
 
   f.qty = "";
   f.price = "";
@@ -3248,6 +3259,7 @@ function addTransaction() {
   f.newTicker = "";
   f.newBroker = "";
   f.tickerSearchResults = [];
+  p.dirty = false;
   render();
 }
 
