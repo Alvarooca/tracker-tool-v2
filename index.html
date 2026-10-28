@@ -250,6 +250,26 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 <div id="app"></div>
 
 <script>
+ // Detectar si la página se abrió con la orden de auto-guardado por URL
+  window.addEventListener('DOMContentLoaded', async () => {
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('autosave') === 'true') {
+      console.log("Iniciando autoguardado remoto...");
+      
+      // Espera a que carguen los datos iniciales de Supabase si tu app lo requiere
+      if (typeof loadInitialDataFromSupabase === 'function') {
+        await loadInitialDataFromSupabase();
+      }
+      
+      // Ejecuta la búsqueda de datos del día con la opción de autoguardado tras un margen de seguridad
+      setTimeout(async () => {
+        if (typeof fetchLiveDayChange === 'function') {
+          await fetchLiveDayChange({ autoSave: true });
+          console.log("Historial autograbado con éxito.");
+        }
+      }, 5000); 
+    }
+  });
 /* ---------------------------------------------------------------------- */
 /*  Constants & helpers                                                   */
 /* ---------------------------------------------------------------------- */
