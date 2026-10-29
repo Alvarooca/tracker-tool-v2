@@ -250,26 +250,61 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 <div id="app"></div>
 
 <script>
- // Detectar si la página se abrió con la orden de auto-guardado por URL
-  window.addEventListener('DOMContentLoaded', async () => {
-    const urlParams = new URLSearchParams(window.location.search);
-    if (urlParams.get('autosave') === 'true') {
-      console.log("Iniciando autoguardado remoto...");
-      
-      // Espera a que carguen los datos iniciales de Supabase si tu app lo requiere
-      if (typeof loadInitialDataFromSupabase === 'function') {
-        await loadInitialDataFromSupabase();
-      }
-      
-      // Ejecuta la búsqueda de datos del día con la opción de autoguardado tras un margen de seguridad
-      setTimeout(async () => {
-        if (typeof fetchLiveDayChange === 'function') {
-          await fetchLiveDayChange({ autoSave: true });
-          console.log("Historial autograbado con éxito.");
-        }
-      }, 5000); 
+window.addEventListener('DOMContentLoaded', async () => {
+  const urlParams = new URLSearchParams(window.location.search);
+  if (urlParams.get('autosave') === 'true') {
+    console.log("Evaluando intento de autoguardado inteligente...");
+
+    // 1. Validar que hoy sea día laborable (Lunes a Viernes)
+    const now = new Date();
+    const dayOfWeek = now.getDay();
+    if (dayOfWeek === 0 || dayOfWeek === 6) {
+      console.log("Es fin de semana. El mercado está cerrado, abortando autoguardado.");
+      return;
     }
-  });
+
+    // 2. Validar la hora actual en Nueva York para asegurar que el mercado cerró (16:00 NY)
+    try {
+      const nyTimeStr = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/New_York',
+        hour: 'numeric',
+        minute: 'numeric',
+        hour12: false
+      }).format(now);
+      
+      const [nyHour, nyMinute] = nyTimeStr.split(':').map(Number);
+      const totalMinutesNY = nyHour * 60 + nyMinute;
+      const marketCloseMinutes = 16 * 60; // 16:00 en minutos (4:00 PM)
+
+      if (totalMinutesNY < marketCloseMinutes) {
+        console.log("El mercado de Nueva York aún no ha cerrado formalmente. Abortando.");
+        return;
+      }
+    } catch (e) {
+      console.log("No se pudo verificar la zona horaria de NY, continuando con cautela.");
+    }
+
+    // 3. Cargar datos iniciales y buscar la variación en vivo
+    if (typeof loadInitialDataFromSupabase === 'function') {
+      await loadInitialDataFromSupabase();
+    }
+    
+    setTimeout(async () => {
+      if (typeof fetchLiveDayChange === 'function') {
+        // Ejecutamos la búsqueda con autoguardado
+        await fetchLiveDayChange({ autoSave: true });
+
+        // 4. Validación de validez de los datos antes de dar por bueno el guardado
+        const h = state.hoje;
+        if (h.error || !h.rows || h.rows.length === 0) {
+          console.warn("Los datos obtenidos no son válidos o la API falló. No se pudo asegurar un registro correcto.");
+        } else {
+          console.log("¡Datos del día válidos! Historial guardado exitosamente de forma autónoma.");
+        }
+      }
+    }, 6000); 
+  }
+});
 /* ---------------------------------------------------------------------- */
 /*  Constants & helpers                                                   */
 /* ---------------------------------------------------------------------- */
