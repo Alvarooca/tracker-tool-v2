@@ -587,21 +587,18 @@ function persistPortfolio(skipCloud = false) {
   if (!skipCloud) sbUpsertPortfolio(state.portfolio); // fire-and-forget
 }
 
-function persistHistory(skipCloud = false) {
+async function persistHistory(skipCloud = false) {
   try {
     const sorted = [...state.history].sort((a, b) => new Date(b.date) - new Date(a.date));
-    // Deduplicar por día (YYYY-MM-DD) — entradas reales ganan sobre day-* del backfill
     const byDate = {};
     const isBackfill = (e) => String(e.id).startsWith("day-");
     sorted.forEach((e) => {
       const day = String(e.date).slice(0, 10);
       const existing = byDate[day];
       if (!existing) { byDate[day] = e; return; }
-      if (!isBackfill(existing) && isBackfill(e)) return; // real gana sobre backfill
+      if (!isBackfill(existing) && isBackfill(e)) return; 
       if (isBackfill(existing) && !isBackfill(e)) { byDate[day] = e; return; }
-      // ambas del mismo tipo: ya está la más reciente (sorted desc)
     });
-    // No guardar entradas day-* en localStorage — no deben propagarse entre dispositivos
     const deduped = Object.values(byDate)
       .filter((e) => !isBackfill(e))
       .sort((a, b) => new Date(b.date) - new Date(a.date));
@@ -620,7 +617,7 @@ function persistHistory(skipCloud = false) {
       localStorage.setItem("pnl-history", JSON.stringify(recent));
     } catch (_) {}
   }
-  if (!skipCloud) sbUpsertHistory(state.history);
+  if (!skipCloud) await sbUpsertHistory(state.history);
 }
 
 // Recalcula el precio promedio de compra de un ticker a partir de TODAS sus transacciones
@@ -1790,7 +1787,7 @@ async function fetchLiveDayChange(opts = {}) {
   // Tocar el botón a mano NUNCA guarda en el historial: solo el proceso automático (autoSave) lo hace.
   compute();
   if (autoSave && !h.error) {
-    saveHistoryAction();
+    await saveHistoryAction();
   }
 }
 
@@ -1835,12 +1832,12 @@ function compute() {
   render();
 }
 
-function saveHistoryAction() {
+async function saveHistoryAction() {
   const h = state.hoje;
   if (!h.result) return;
   const nowIso = new Date().toISOString();
   const todayBZ = brazilTodayYMD();
-  const fixedId = `day-${todayBZ}`; // ID fijo por fecha — evita duplicados en Supabase
+  const fixedId = `day-${todayBZ}`; 
   const entry = {
     id: fixedId,
     date: nowIso,
@@ -1854,14 +1851,14 @@ function saveHistoryAction() {
 
   const existingIdx = state.history.findIndex((e) => dateToBrazilYMD(e.date) === todayBZ);
   if (existingIdx !== -1) {
-    entry.id = state.history[existingIdx].id; // preservar ID existente si ya había uno
+    entry.id = state.history[existingIdx].id; 
     state.history = [...state.history.slice(0, existingIdx), entry, ...state.history.slice(existingIdx + 1)];
   } else {
     state.history = [...state.history, entry];
   }
-  persistHistory();
+  
+  await persistHistory();
 
-  // Notificación push: avisa en todos los dispositivos que el historial se guardó
   const totalStr = entry.total >= 0 ? `+${fmtBRL(entry.total)}` : fmtBRL(entry.total);
   sendPushNotification(
     "P&L Diario — Historial guardado",
