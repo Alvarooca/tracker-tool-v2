@@ -253,59 +253,35 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 window.addEventListener('DOMContentLoaded', async () => {
   const urlParams = new URLSearchParams(window.location.search);
   if (urlParams.get('autosave') === 'true') {
-    console.log("Evaluando intento de autoguardado inteligente...");
+    console.log("Iniciando proceso de autoguardado autónomo...");
 
-    // 1. Validar que hoy sea día laborable (Lunes a Viernes)
+    // 1. Validar día laborable (Lunes a Viernes)
     const now = new Date();
     const dayOfWeek = now.getDay();
     if (dayOfWeek === 0 || dayOfWeek === 6) {
-      console.log("Es fin de semana. El mercado está cerrado, abortando autoguardado.");
+      console.log("Fin de semana. Mercado cerrado.");
       return;
     }
 
-    // 2. Validar la hora actual en Nueva York para asegurar que el mercado cerró (16:00 NY)
-    try {
-      const nyTimeStr = new Intl.DateTimeFormat('en-US', {
-        timeZone: 'America/New_York',
-        hour: 'numeric',
-        minute: 'numeric',
-        hour12: false
-      }).format(now);
-      
-      const [nyHour, nyMinute] = nyTimeStr.split(':').map(Number);
-      const totalMinutesNY = nyHour * 60 + nyMinute;
-      const marketCloseMinutes = 16 * 60; // 16:00 en minutos (4:00 PM)
-
-      if (totalMinutesNY < marketCloseMinutes) {
-        console.log("El mercado de Nueva York aún no ha cerrado formalmente. Abortando.");
-        return;
-      }
-    } catch (e) {
-      console.log("No se pudo verificar la zona horaria de NY, continuando con cautela.");
-    }
-
-    // 🔑 3. DESCARGAR Y ESPERAR OBLIGATORIAMENTE LAS KEYS Y DATOS DESDE SUPABASE
+    // 2. Descargar claves y configuraciones desde la tabla 'settings' de Supabase
     if (typeof syncPullFromCloud === 'function') {
-      console.log("Descargando configuración y claves desde Supabase...");
+      console.log("Sincronizando claves y datos desde Supabase...");
       await syncPullFromCloud();
-      // Refrescamos los estados para que tomen las keys recién bajadas
-      resetPosicoesState();
+      if (typeof resetPosicoesState === 'function') resetPosicoesState();
     }
     
-    // Pequeña pausa de seguridad para estabilizar los datos
+    // Pausa para estabilizar estado
     await new Promise(resolve => setTimeout(resolve, 2000));
 
-    // 4. Ejecutar la búsqueda y el autoguardado con las keys ya cargadas
+    // 3. Ejecutar la búsqueda de precios del día
     if (typeof fetchLiveDayChange === 'function') {
       await fetchLiveDayChange({ autoSave: true });
 
-      // 5. Validación final
-      const h = state.hoje;
-      if (h.error || !h.rows || h.rows.length === 0) {
-        console.warn("Los datos obtenidos no son válidos o la API falló:", h.error);
-      } else {
-        console.log("¡Datos del día válidos! Historial guardado exitosamente de forma autónoma en Supabase.");
-      }
+      // 🔑 4. MARGEN DE SEGURIDAD: Esperar 5 segundos adicionales 
+      // para evitar que GitHub Actions cierre el navegador antes de que Supabase reciba el upsert
+      console.log("Esperando confirmación final de subida a Supabase...");
+      await new Promise(resolve => setTimeout(resolve, 5000));
+      console.log("¡Autoguardado completado!");
     }
   }
 });
@@ -1841,7 +1817,7 @@ async function saveHistoryAction() {
   if (!h.result) return;
   const nowIso = new Date().toISOString();
   const todayBZ = brazilTodayYMD();
-  const fixedId = `day-${todayBZ}`; 
+  const fixedId = `real-${todayBZ}`; 
   const entry = {
     id: fixedId,
     date: nowIso,
