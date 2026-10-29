@@ -1,17 +1,18 @@
-name: Daily PnL Auto-Save
+name: Auto Save PnL Diario
 
 on:
   schedule:
-    # Se ejecuta a las 20:15 UTC (17:15 / 5:15 PM hora de Brasil)
-    - cron: '15 20 * * 1-5'
-    # Se ejecuta a las 21:15 UTC (18:15 / 6:15 PM hora de Brasil)
-    - cron: '15 21 * * 1-5'
-  workflow_dispatch: 
+    - cron: '0 0 * * *' # Se ejecuta todos los días a las 00:00 UTC
+  workflow_dispatch: # Permite dispararlo manualmente desde GitHub cuando quieras probarlo
 
 jobs:
-  trigger-save:
+  autosave:
     runs-on: ubuntu-latest
     steps:
-      - name: Hit App URL with Auto-Save Parameter
-        run: |
-          curl -s "https://alvarooca.github.io/tracker-tool-v2/?autosave=true"
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Trigger App Autosave
+        uses: puppeteer/puppeteer-script@v1 # O la acción de navegador que uses para abrir tu URL
+        with:
+          args: "https://alvarooca.github.io/tracker-tool-v2/?autosave=true"
