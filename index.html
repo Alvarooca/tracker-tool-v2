@@ -255,11 +255,15 @@ window.addEventListener('DOMContentLoaded', async () => {
   if (urlParams.get('autosave') === 'true') {
     console.log("Evaluando intento de autoguardado inteligente...");
 
-    // 1. Validar días laborables y horario de NY (igual que antes)
+    // 1. Validar que hoy sea día laborable (Lunes a Viernes)
     const now = new Date();
     const dayOfWeek = now.getDay();
-    if (dayOfWeek === 0 || dayOfWeek === 6) return;
+    if (dayOfWeek === 0 || dayOfWeek === 6) {
+      console.log("Es fin de semana. El mercado está cerrado, abortando autoguardado.");
+      return;
+    }
 
+    // 2. Validar la hora actual en Nueva York para asegurar que el mercado cerró (16:00 NY)
     try {
       const nyTimeStr = new Intl.DateTimeFormat('en-US', {
         timeZone: 'America/New_York',
@@ -267,28 +271,40 @@ window.addEventListener('DOMContentLoaded', async () => {
         minute: 'numeric',
         hour12: false
       }).format(now);
+      
       const [nyHour, nyMinute] = nyTimeStr.split(':').map(Number);
-      if ((nyHour * 60 + nyMinute) < (16 * 60)) return;
-    } catch (e) {}
+      const totalMinutesNY = nyHour * 60 + nyMinute;
+      const marketCloseMinutes = 16 * 60; // 16:00 en minutos (4:00 PM)
 
-    // 2. Cargar datos iniciales de Supabase y ASEGURARNOS de que la sesión responda
-    if (typeof loadInitialDataFromSupabase === 'function') {
-      await loadInitialDataFromSupabase();
+      if (totalMinutesNY < marketCloseMinutes) {
+        console.log("El mercado de Nueva York aún no ha cerrado formalmente. Abortando.");
+        return;
+      }
+    } catch (e) {
+      console.log("No se pudo verificar la zona horaria de NY, continuando con cautela.");
+    }
+
+    // 🔑 3. DESCARGAR Y ESPERAR OBLIGATORIAMENTE LAS KEYS Y DATOS DESDE SUPABASE
+    if (typeof syncPullFromCloud === 'function') {
+      console.log("Descargando configuración y claves desde Supabase...");
+      await syncPullFromCloud();
+      // Refrescamos los estados para que tomen las keys recién bajadas
+      resetPosicoesState();
     }
     
-    // 🔑 Damos 3 segundos adicionales para garantizar que el cliente de Supabase esté listo
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    // Pequeña pausa de seguridad para estabilizar los datos
+    await new Promise(resolve => setTimeout(resolve, 2000));
 
-    // 3. Ejecutar la búsqueda y el autoguardado
+    // 4. Ejecutar la búsqueda y el autoguardado con las keys ya cargadas
     if (typeof fetchLiveDayChange === 'function') {
       await fetchLiveDayChange({ autoSave: true });
 
-      // 4. Verificación explícita de éxito
+      // 5. Validación final
       const h = state.hoje;
-      if (!h.error && h.rows && h.rows.length > 0) {
-        console.log("¡Autoguardado procesado y enviado a Supabase!");
+      if (h.error || !h.rows || h.rows.length === 0) {
+        console.warn("Los datos obtenidos no son válidos o la API falló:", h.error);
       } else {
-        console.warn("El autoguardado encontró un error o datos vacíos:", h.error);
+        console.log("¡Datos del día válidos! Historial guardado exitosamente de forma autónoma en Supabase.");
       }
     }
   }
