@@ -284,25 +284,26 @@ window.addEventListener('DOMContentLoaded', async () => {
       console.log("No se pudo verificar la zona horaria de NY, continuando con cautela.");
     }
 
-    // 3. Cargar datos iniciales y buscar la variación en vivo
+    // 3. Cargar datos iniciales de Supabase
     if (typeof loadInitialDataFromSupabase === 'function') {
       await loadInitialDataFromSupabase();
     }
     
-    setTimeout(async () => {
-      if (typeof fetchLiveDayChange === 'function') {
-        // Ejecutamos la búsqueda con autoguardado
-        await fetchLiveDayChange({ autoSave: true });
+    // Pausa controlada asíncrona (reemplaza al setTimeout para no desconectar el hilo principal)
+    await new Promise(resolve => setTimeout(resolve, 2000));
 
-        // 4. Validación de validez de los datos antes de dar por bueno el guardado
-        const h = state.hoje;
-        if (h.error || !h.rows || h.rows.length === 0) {
-          console.warn("Los datos obtenidos no son válidos o la API falló. No se pudo asegurar un registro correcto.");
-        } else {
-          console.log("¡Datos del día válidos! Historial guardado exitosamente de forma autónoma.");
-        }
+    // 4. Ejecutar la búsqueda y el autoguardado esperando obligatoriamente a que termine
+    if (typeof fetchLiveDayChange === 'function') {
+      await fetchLiveDayChange({ autoSave: true });
+
+      // 5. Validación final
+      const h = state.hoje;
+      if (h.error || !h.rows || h.rows.length === 0) {
+        console.warn("Los datos obtenidos no son válidos o la API falló. No se pudo asegurar un registro correcto.");
+      } else {
+        console.log("¡Datos del día válidos! Historial guardado exitosamente de forma autónoma en Supabase.");
       }
-    }, 6000); 
+    }
   }
 });
 /* ---------------------------------------------------------------------- */
