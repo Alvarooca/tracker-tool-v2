@@ -1,0 +1,17 @@
+name: Daily PnL Auto-Save
+
+on:
+  schedule:
+    # Se ejecuta a las 20:15 UTC (17:15 / 5:15 PM hora de Brasil)
+    - cron: '15 20 * * 1-5'
+    # Se ejecuta a las 21:15 UTC (18:15 / 6:15 PM hora de Brasil)
+    - cron: '15 21 * * 1-5'
+  workflow_dispatch: 
+
+jobs:
+  trigger-save:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hit App URL with Auto-Save Parameter
+        run: |
+          curl -s "https://alvarooca.github.io/tracker-tool-v2/?autosave=true"
