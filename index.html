@@ -4588,15 +4588,20 @@ async function registerPushSubscription() {
   }
 }
 
-async function sendPushNotification(title, body, tag = "pnl") {
+async function sendPushNotification(title, body, tag) {
   try {
-    await fetch(`${SUPABASE_URL}/functions/v1/send-push`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SUPABASE_ANON_KEY}` },
-      body: JSON.stringify({ title, body, tag, user_id: SB_USER }),
+    const response = await fetch('https://uvlgifjbpyuretvyfrlyy.supabase.co/functions/v1/send-push', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, body, tag })
     });
-  } catch (e) {
-    console.warn("[push] Error al enviar notificación:", e);
+    
+    if (!response.ok) {
+      console.warn("La notificación push no pudo enviarse, pero el proceso continúa.");
+    }
+  } catch (error) {
+    // 🔑 Esto evita que el error de CORS corte el guardado en Supabase
+    console.warn("[push] Error de red ignorado para no interrumpir el guardado:", error.message);
   }
 }
 
