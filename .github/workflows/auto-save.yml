@@ -3,7 +3,7 @@ name: Auto Save PnL Diario
 on:
   schedule:
     - cron: '0 0 * * *' # Se ejecuta todos los días a las 00:00 UTC
-  workflow_dispatch: # Permite dispararlo manualmente desde GitHub cuando quieras probarlo
+  workflow_dispatch: # Permite probarlo manualmente desde la pestaña Actions
 
 jobs:
   autosave:
@@ -12,7 +12,38 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Trigger App Autosave
-        uses: puppeteer/puppeteer-script@v1 # O la acción de navegador que uses para abrir tu URL
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
         with:
-          args: "https://alvarooca.github.io/tracker-tool-v2/?autosave=true"
+          node-version: '18'
+
+      - name: Install Puppeteer
+        run: npm install puppeteer
+
+      - name: Run Autosave Script
+        run: |
+          node -e '
+          const puppeteer = require("puppeteer");
+          (async () => {
+            console.log("Abriendo navegador headless...");
+            const browser = await puppeteer.launch({ 
+              headless: "new",
+              args: ["--no-sandbox", "--disable-setuid-sandbox"]
+            });
+            const page = await browser.newPage();
+            
+            console.log("Navegando a la app con autosave=true...");
+            // Cambia esta URL por la dirección real de tu GitHub Pages
+            await page.goto("https://alvarooca.github.io/tracker-tool-v2/?autosave=true", {
+              waitUntil: "networkidle0",
+              timeout: 120000 // 2 minutos de margen para las APIs
+            });
+
+            console.log("Esperando a que se complete el proceso y Supabase guarde...");
+            // Damos 15 segundos extra para asegurar la subida a Supabase
+            await new Promise(r => setTimeout(r, 15000));
+
+            await browser.close();
+            console.log("Navegador cerrado correctamente.");
+          })();
+          '
