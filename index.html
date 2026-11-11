@@ -250,41 +250,26 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 <div id="app"></div>
 
 <script>
-window.addEventListener('DOMContentLoaded', async () => {
-  const urlParams = new URLSearchParams(window.location.search);
-  if (urlParams.get('autosave') === 'true') {
-    console.log("Iniciando proceso de autoguardado autónomo...");
-
-    // 1. Validar día laborable (Lunes a Viernes)
-    const now = new Date();
-    const dayOfWeek = now.getDay();
-    if (dayOfWeek === 0 || dayOfWeek === 6) {
-      console.log("Fin de semana. Mercado cerrado.");
-      return;
+ // Detectar si la página se abrió con la orden de auto-guardado por URL
+  window.addEventListener('DOMContentLoaded', async () => {
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('autosave') === 'true') {
+      console.log("Iniciando autoguardado remoto...");
+      
+      // Espera a que carguen los datos iniciales de Supabase si tu app lo requiere
+      if (typeof loadInitialDataFromSupabase === 'function') {
+        await loadInitialDataFromSupabase();
+      }
+      
+      // Ejecuta la búsqueda de datos del día con la opción de autoguardado tras un margen de seguridad
+      setTimeout(async () => {
+        if (typeof fetchLiveDayChange === 'function') {
+          await fetchLiveDayChange({ autoSave: true });
+          console.log("Historial autograbado con éxito.");
+        }
+      }, 5000); 
     }
-
-    // 2. Descargar claves y configuraciones desde la tabla 'settings' de Supabase
-    if (typeof syncPullFromCloud === 'function') {
-      console.log("Sincronizando claves y datos desde Supabase...");
-      await syncPullFromCloud();
-      if (typeof resetPosicoesState === 'function') resetPosicoesState();
-    }
-    
-    // Pausa para estabilizar estado
-    await new Promise(resolve => setTimeout(resolve, 2000));
-
-    // 3. Ejecutar la búsqueda de precios del día
-    if (typeof fetchLiveDayChange === 'function') {
-      await fetchLiveDayChange({ autoSave: true });
-
-      // 🔑 4. MARGEN DE SEGURIDAD: Esperar 5 segundos adicionales 
-      // para evitar que GitHub Actions cierre el navegador antes de que Supabase reciba el upsert
-      console.log("Esperando confirmación final de subida a Supabase...");
-      await new Promise(resolve => setTimeout(resolve, 5000));
-      console.log("¡Autoguardado completado!");
-    }
-  }
-});
+  });
 /* ---------------------------------------------------------------------- */
 /*  Constants & helpers                                                   */
 /* ---------------------------------------------------------------------- */
@@ -567,18 +552,21 @@ function persistPortfolio(skipCloud = false) {
   if (!skipCloud) sbUpsertPortfolio(state.portfolio); // fire-and-forget
 }
 
-async function persistHistory(skipCloud = false) {
+function persistHistory(skipCloud = false) {
   try {
     const sorted = [...state.history].sort((a, b) => new Date(b.date) - new Date(a.date));
+    // Deduplicar por día (YYYY-MM-DD) — entradas reales ganan sobre day-* del backfill
     const byDate = {};
     const isBackfill = (e) => String(e.id).startsWith("day-");
     sorted.forEach((e) => {
       const day = String(e.date).slice(0, 10);
       const existing = byDate[day];
       if (!existing) { byDate[day] = e; return; }
-      if (!isBackfill(existing) && isBackfill(e)) return; 
+      if (!isBackfill(existing) && isBackfill(e)) return; // real gana sobre backfill
       if (isBackfill(existing) && !isBackfill(e)) { byDate[day] = e; return; }
+      // ambas del mismo tipo: ya está la más reciente (sorted desc)
     });
+    // No guardar entradas day-* en localStorage — no deben propagarse entre dispositivos
     const deduped = Object.values(byDate)
       .filter((e) => !isBackfill(e))
       .sort((a, b) => new Date(b.date) - new Date(a.date));
@@ -597,7 +585,7 @@ async function persistHistory(skipCloud = false) {
       localStorage.setItem("pnl-history", JSON.stringify(recent));
     } catch (_) {}
   }
-  if (!skipCloud) await sbUpsertHistory(state.history);
+  if (!skipCloud) sbUpsertHistory(state.history);
 }
 
 // Recalcula el precio promedio de compra de un ticker a partir de TODAS sus transacciones
@@ -1532,7 +1520,7 @@ function renderHojeReviewResult() {
       const row = h.result ? h.result.rows.find((r) => r.id === p.id) : null;
       const priceInfo = h.priceByTicker?.[p.ticker];
       const priceCell = priceInfo
-        ? `<span class="small muted" style="font-variant-numeric:tabular-nums">US$ ${(Number(priceInfo?.price) || 0).toFixed(2)} <span style="opacity:.6">(${(Number(priceInfo?.prevClose) || 0).toFixed(2)})</span></span>`
+        ? `<span class="small muted" style="font-variant-numeric:tabular-nums">US$ ${priceInfo.price.toFixed(2)} <span style="opacity:.6">(${priceInfo.prevClose.toFixed(2)})</span></span>`
         : "";
       const pctCell =
         h.status === "review"
@@ -1767,7 +1755,7 @@ async function fetchLiveDayChange(opts = {}) {
   // Tocar el botón a mano NUNCA guarda en el historial: solo el proceso automático (autoSave) lo hace.
   compute();
   if (autoSave && !h.error) {
-    await saveHistoryAction();
+    saveHistoryAction();
   }
 }
 
@@ -1812,12 +1800,12 @@ function compute() {
   render();
 }
 
-async function saveHistoryAction() {
+function saveHistoryAction() {
   const h = state.hoje;
   if (!h.result) return;
   const nowIso = new Date().toISOString();
   const todayBZ = brazilTodayYMD();
-  const fixedId = `real-${todayBZ}`; 
+  const fixedId = `day-${todayBZ}`; // ID fijo por fecha — evita duplicados en Supabase
   const entry = {
     id: fixedId,
     date: nowIso,
@@ -1831,14 +1819,14 @@ async function saveHistoryAction() {
 
   const existingIdx = state.history.findIndex((e) => dateToBrazilYMD(e.date) === todayBZ);
   if (existingIdx !== -1) {
-    entry.id = state.history[existingIdx].id; 
+    entry.id = state.history[existingIdx].id; // preservar ID existente si ya había uno
     state.history = [...state.history.slice(0, existingIdx), entry, ...state.history.slice(existingIdx + 1)];
   } else {
     state.history = [...state.history, entry];
   }
-  
-  await persistHistory();
+  persistHistory();
 
+  // Notificación push: avisa en todos los dispositivos que el historial se guardó
   const totalStr = entry.total >= 0 ? `+${fmtBRL(entry.total)}` : fmtBRL(entry.total);
   sendPushNotification(
     "P&L Diario — Historial guardado",
@@ -4580,20 +4568,15 @@ async function registerPushSubscription() {
   }
 }
 
-async function sendPushNotification(title, body, tag) {
+async function sendPushNotification(title, body, tag = "pnl") {
   try {
-    const response = await fetch('https://uvlgifjbpyuretvyfrlyy.supabase.co/functions/v1/send-push', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, body, tag })
+    await fetch(`${SUPABASE_URL}/functions/v1/send-push`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SUPABASE_ANON_KEY}` },
+      body: JSON.stringify({ title, body, tag, user_id: SB_USER }),
     });
-    
-    if (!response.ok) {
-      console.warn("La notificación push no pudo enviarse, pero el proceso continúa.");
-    }
-  } catch (error) {
-    // 🔑 Esto evita que el error de CORS corte el guardado en Supabase
-    console.warn("[push] Error de red ignorado para no interrumpir el guardado:", error.message);
+  } catch (e) {
+    console.warn("[push] Error al enviar notificación:", e);
   }
 }
 
