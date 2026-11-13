@@ -3860,6 +3860,7 @@ function render() {
       </nav>
 
       <main class="main">
+        ${renderSyncBanner()}
         ${state.tab === "hoje" ? renderHoje() : state.tab === "posicoes" ? renderPosicoes() : renderHistorico()}
       </main>
     </div>`;
@@ -3964,6 +3965,8 @@ function handleAction(action, el) {
     case "clear-history": clearHistoryAction(); break;
     case "remove-entry": removeEntryAction(id); break;
     case "install-app": installApp(); break;
+    case "retry-sync": retrySync(); break;
+    case "dismiss-notice": state.notice = null; render(); break;
     case "toggle-currency":
       state.displayCurrency = state.displayCurrency === "USD" ? "BRL" : "USD";
       try { localStorage.setItem("pnl-currency", state.displayCurrency); } catch (_) {}
@@ -4283,6 +4286,72 @@ async function sbRequest(method, table, body = null, query = "") {
   }
 }
 
+// ── Seguimiento de subidas fallidas ─────────────────────────────────────────
+// sbRequest devuelve null cuando falla. Antes ese fallo solo dejaba un console.warn y la nube
+// quedaba con datos viejos; el siguiente syncPullFromCloud los bajaba y pisaba lo local.
+// Ahora cada tabla con una subida fallida queda marcada como "pendiente" (localStorage):
+// se muestra un aviso, se reintenta antes de bajar de la nube y, mientras siga pendiente,
+// el pull NO sobrescribe esa tabla local. (history no se rastrea: sus entradas "livianas"
+// no tienen `rows` y reenviarlas borraría el detalle en la nube.)
+const PENDING_KEY = "pnl-pending-sync";
+const TABLE_LABELS = { portfolio: "posiciones", transactions: "transacciones", splits: "desdoblamientos" };
+function getPending() { try { return JSON.parse(localStorage.getItem(PENDING_KEY) || "[]"); } catch (_) { return []; } }
+function setPending(list) { try { localStorage.setItem(PENDING_KEY, JSON.stringify(list)); } catch (_) {} }
+function hasPending(table) { return getPending().includes(table); }
+function trackSync(table, result) {
+  const pending = getPending();
+  const was = pending.includes(table);
+  if (result === null) {
+    if (!was) setPending([...pending, table]);
+  } else if (was) {
+    setPending(pending.filter((t) => t !== table));
+  } else return;
+  setTimeout(() => { if (document.getElementById("app")?.innerHTML) renderPreservingFocus(); }, 0);
+}
+async function retrySync() {
+  const pending = getPending();
+  if (pending.includes("portfolio")) await sbUpsertPortfolio(state.portfolio);
+  if (pending.includes("transactions")) await sbUpsertTransactions(state.transactions);
+  if (pending.includes("splits")) await sbUpsertSplits(state.splits || []);
+  renderPreservingFocus();
+}
+function renderSyncBanner() {
+  let html = "";
+  const pending = getPending();
+  if (pending.length) {
+    html += `<div class="banner banner-warn" style="align-items:center">${icon("alert-triangle", 15)}<div style="flex:1">Hay cambios que no se pudieron subir a la nube (${pending.map((t) => TABLE_LABELS[t] || t).join(", ")}). Hasta que se suban, otro dispositivo podría mostrar datos viejos.</div><button class="btn btn-ghost btn-sm" data-action="retry-sync">Reintentar</button></div>`;
+  }
+  if (state.notice) {
+    html += `<div class="banner banner-ok" style="align-items:center">${icon("check-circle", 15)}<div style="flex:1">${escapeHtml(state.notice)}</div><button class="icon-btn" data-action="dismiss-notice" title="Cerrar">${icon("x", 14)}</button></div>`;
+  }
+  return html;
+}
+
+// Reconciliación: la cantidad de cada posición (corretora + ticker) debe ser igual a compras −
+// ventas de sus transacciones. Si difiere (p. ej. una subida de `portfolio` falló), se corrige
+// junto con costo promedio y saldo. Se omite si no hay transacciones de esa posición, si el
+// ticker tiene compras/ventas sin corretora (no se pueden atribuir) o si el neto es ≤ 0.
+function reconcilePositionQuantities() {
+  const norm = (b) => String(b || "").trim().toLowerCase();
+  const changes = [];
+  const unattributable = new Set();
+  state.transactions.forEach((t) => { if ((t.type === "buy" || t.type === "sell") && !norm(t.broker)) unattributable.add(t.ticker); });
+  state.portfolio = state.portfolio.map((row) => {
+    if (!row.broker || unattributable.has(row.ticker)) return row;
+    const txs = state.transactions.filter((t) => (t.type === "buy" || t.type === "sell") && t.ticker === row.ticker && norm(t.broker) === norm(row.broker));
+    if (!txs.length) return row;
+    const net = Math.round(txs.reduce((a, t) => a + (t.type === "buy" ? t.qty : -t.qty), 0) * 100000) / 100000;
+    const old = parseNum(row.quantity);
+    if (net <= 0.0001 || Math.abs(net - old) < 0.00001) return row;
+    const { avgCostUsd, avgCostBrl } = recomputeCostBasisFromTransactions(row.ticker, row.broker);
+    const saldo = old > 0 ? Math.round(parseNum(row.saldo) * (net / old) * 100) / 100 : row.saldo;
+    changes.push(`${row.ticker} · ${row.broker}: ${old} → ${net}`);
+    return { ...row, quantity: net, avgCost: avgCostUsd ?? row.avgCost, avgCostBrl, saldo };
+  });
+  if (changes.length) { try { localStorage.setItem("pnl-portfolio", JSON.stringify(state.portfolio)); } catch (_) {} }
+  return changes;
+}
+
 // ── UPSERT helpers ──────────────────────────────────────────────────────────
 
 async function sbUpsertHistory(entries) {
@@ -4321,7 +4390,7 @@ async function sbUpsertTransactions(txs) {
     type: t.type, qty: t.qty, price: t.price, fx: t.fx ?? null, source: t.source ?? null,
     broker: t.broker ?? "",
   }));
-  await sbRequest("POST", "transactions", rows, "?on_conflict=id");
+  trackSync("transactions", await sbRequest("POST", "transactions", rows, "?on_conflict=id"));
 }
 
 async function sbUpsertPortfolio(portfolio) {
@@ -4331,7 +4400,7 @@ async function sbUpsertPortfolio(portfolio) {
     quantity: p.quantity, avg_cost: p.avgCost ?? null, avg_cost_brl: p.avgCostBrl ?? null,
     saldo: p.saldo, sort_order: i,
   }));
-  await sbRequest("POST", "portfolio", rows, "?on_conflict=id");
+  trackSync("portfolio", await sbRequest("POST", "portfolio", rows, "?on_conflict=id"));
   // NOTA: no eliminamos filas de la nube desde el pull — solo desde el push explícito.
   // Si lo hiciéramos aquí, un dispositivo recién sincronizado (con portfolio parcial)
   // podría borrar filas válidas de la nube que todavía no descargó.
@@ -4351,7 +4420,7 @@ async function sbUpsertSplits(splits) {
   const rows = deduped.map((s) => ({
     id: s.id, user_id: SB_USER, ticker: s.ticker, date: s.date, ratio: s.ratio,
   }));
-  await sbRequest("POST", "splits", rows, "?on_conflict=id");
+  trackSync("splits", await sbRequest("POST", "splits", rows, "?on_conflict=id"));
 
   // Limpiar duplicados que ya existan en la nube (por si quedaron de versiones anteriores).
   // Descargamos todos los splits de la nube, detectamos duplicados por contenido, y borramos
@@ -4378,6 +4447,9 @@ async function sbUpsertSplits(splits) {
 
 async function syncPullFromCloud() {
   try {
+    // Si quedó algo sin subir de una sesión anterior, se reintenta ANTES de bajar de la nube.
+    if (getPending().length) await retrySync();
+
     // Para el historial, solo bajamos los últimos 90 días al abrir la app —
     // suficiente para el funcionamiento diario y los gráficos recientes.
     // El historial completo se carga solo cuando el usuario entra a "Historial".
@@ -4394,6 +4466,7 @@ async function syncPullFromCloud() {
     ]);
 
     let changed = false;
+    let reconciledNow = [];
 
     // Historial — agregar entradas que faltan localmente
     if (cloudHistory?.length) {
@@ -4443,7 +4516,7 @@ async function syncPullFromCloud() {
     // Portfolio — la nube es siempre fuente de verdad.
     // Reemplazamos el portfolio local completo con el de la nube, preservando
     // el campo `price` (cotización en vivo) si ya lo teníamos localmente.
-    if (cloudPortfolio?.length) {
+    if (cloudPortfolio?.length && !hasPending("portfolio")) {
       const localPriceById = Object.fromEntries(state.portfolio.map((p) => [p.id, p.price ?? ""]));
       const cloudMapped = cloudPortfolio.map((r) => ({
         id: r.id, ticker: r.ticker, broker: r.broker ?? "",
@@ -4509,6 +4582,12 @@ async function syncPullFromCloud() {
       if (settingsChanged) changed = true;
     }
 
+    // Reconciliar cantidades de posiciones contra las transacciones (ya fusionadas con la nube).
+    if (!state.posicoes?.dirty) {
+      reconciledNow = reconcilePositionQuantities();
+      if (reconciledNow.length) changed = true;
+    }
+
     if (changed) {
       // skipCloud=true en las cuatro: estos datos ACABAN de llegar de la nube (recién
       // fusionados), así que no hay nada nuevo que subir. Volver a subirlos (sbUpsert*) es, en
@@ -4520,11 +4599,12 @@ async function syncPullFromCloud() {
       // de simplemente sincronizar/leer datos que la nube ya tiene.
       persistHistory(true);
       persistTransactions(true);
-      persistPortfolio(true);
+      persistPortfolio(!reconciledNow.length); // si se reconcilió algo, SÍ se sube a la nube
       persistSplits(true);
       resetHojeState();
       resetPosicoesState();
       resetHistoricoState();
+      if (reconciledNow.length) state.notice = "Se corrigieron cantidades según tus transacciones: " + reconciledNow.join(" · ");
       render();
       console.log("[supabase] Sincronización completada — datos actualizados desde la nube");
     }
