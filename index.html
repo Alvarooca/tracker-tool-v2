@@ -3232,7 +3232,7 @@ function addTransaction() {
     state.portfolio = [...state.portfolio, newRow];
     targetRowId = newRowId;
     
-    state.transactions.push({ id: uid(), source: "manual", ticker, date: new Date(`${f.date}T12:00:00`).toISOString(), type: f.type, qty, price, fx: fxForTx });
+    state.transactions.push({ id: uid(), source: "manual", ticker, date: new Date(`${f.date}T12:00:00`).toISOString(), type: f.type, qty, price, fx: fxForTx, broker: f.newBroker.trim() });
   } else {
     const row = p.rows.find((r) => r.id === f.rowId);
     if (!row) { f.error = "No encontré esa posición."; render(); return; }
@@ -3255,6 +3255,7 @@ function addTransaction() {
       id: uid(), 
       source: "manual", 
       ticker: row.ticker, 
+      broker: row.broker || "", 
       date: new Date(`${f.date}T12:00:00`).toISOString(), 
       type: f.type, 
       qty, 
@@ -4348,6 +4349,7 @@ function reconcilePositionQuantities() {
     changes.push(`${row.ticker} · ${row.broker}: ${old} → ${net}`);
     return { ...row, quantity: net, avgCost: avgCostUsd ?? row.avgCost, avgCostBrl, saldo };
   });
+  state.reconcileSkipped = [...new Set(state.portfolio.filter((r) => unattributable.has(r.ticker)).map((r) => r.ticker))];
   if (changes.length) { try { localStorage.setItem("pnl-portfolio", JSON.stringify(state.portfolio)); } catch (_) {} }
   return changes;
 }
@@ -4586,6 +4588,10 @@ async function syncPullFromCloud() {
     if (!state.posicoes?.dirty) {
       reconciledNow = reconcilePositionQuantities();
       if (reconciledNow.length) changed = true;
+      if (state.reconcileSkipped?.length && !reconciledNow.length) {
+        state.notice = "No pude verificar las cantidades de " + state.reconcileSkipped.join(", ") + ": tienen compras/ventas sin corretora en la tabla transactions. Complétala en Supabase (columna broker).";
+        changed = true;
+      }
     }
 
     if (changed) {
