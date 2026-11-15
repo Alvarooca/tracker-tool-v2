@@ -1168,6 +1168,7 @@ function resetHistoricoState() {
   const prev = state.historico || {};
   state.historico = {
     confirmClear: false,
+    confirmRemoveId: null,
     importStatus: "idle",
     importProgressLabel: null,
     importMessage: null,
@@ -1499,7 +1500,6 @@ function renderHoje() {
       <div class="card upload-card">
         ${h.error ? `<div class="banner banner-warn">${icon("alert-triangle", 15)} ${escapeHtml(h.error)}</div>` : ""}
         ${icon("refresh", 28, "muted")}
-        <p class="upload-text">El mercado está abierto. La variación se actualiza sola cada 5 minutos.</p>
         <button class="btn btn-primary" data-action="fetch-live-day-change" ${loading ? "disabled" : ""}>
           ${icon("refresh", 15, loading ? "spin" : "")} ${loading ? (h.fetchProgressLabel || "Buscando…") : "Buscar variación ahora"}
         </button>
@@ -1508,7 +1508,8 @@ function renderHoje() {
   } else {
     inner = renderHojeReviewResult();
   }
-  return `<div class="stack">${inner}</div>`;
+  const marketBadge = `<div class="small up" style="padding:0 4px">● Mercado abierto · se actualiza cada 5 min</div>`;
+  return `<div class="stack">${marketBadge}${inner}</div>`;
 }
 
 // Última sesión con datos: el día hábil más reciente guardado en el historial.
@@ -1962,7 +1963,7 @@ function renderDividendsCard() {
       <h2 class="card-title">Dividendos recibidos</h2>
       <span class="muted small">Neto: US$ ${totalNetUsd.toFixed(2)}${anyFx ? ` · R$ ${totalNetBrlKnown.toFixed(2)}` : ""}</span>
     </div>
-    <p class="muted small">Es la plata que ya cobraste en efectivo por tus acciones (ganancia <b>realizada</b>, ya con la retención de EE. UU. aplicada) — no depende de si todavía tenés esas acciones o no. Es distinto de "Ganancia/pérdida no realizada" (que es sobre el precio de lo que tenés hoy) y se cuenta aparte en el "Rendimiento total" del Histórico.</p>
+    <p class="muted small">Es la plata que ya cobraste en efectivo por tus acciones (ganancia <b>realizada</b>, ya con la retención de EE. UU. aplicada) — no depende de si todavía tienes esas acciones o no. Es distinto de "Ganancia/pérdida no realizada" (que es sobre el precio de lo que tienes hoy) y se cuenta aparte en el "Rendimiento total" del Histórico.</p>
     <p class="muted small">Bruto acumulado: US$ ${totalGrossUsd.toFixed(2)} · Retención EE. UU. aplicada: −US$ ${(totalGrossUsd - totalNetUsd).toFixed(2)}</p>
     <div class="tx-form-row">
       <span class="muted small" style="align-self:center">Retención EE. UU. (%)</span>
@@ -2089,7 +2090,7 @@ function renderUnrealized(rows) {
       <h2 class="card-title">Ganancia/pérdida no realizada</h2>
       <span class="${totalGainUsd >= 0 ? "up" : "down"} small"><b>${totalGainBrl !== null ? fmtBRL(totalGainBrl) : `US$ ${totalGainUsd.toFixed(2)}`} (${fmtPct(totalPctBrl)})</b></span>
     </div>
-    <p class="muted small">Responde: "si vendiera HOY todo lo que tengo, ¿cuánto ganaría o perdería?". Solo considera el precio de las acciones que <b>todavía tenés</b> — no incluye lo que ya vendiste ni los dividendos cobrados (eso vive en "Rendimiento total", en el Histórico, para no contar nada dos veces).</p>
+    <p class="muted small">Responde: "si vendiera HOY todo lo que tengo, ¿cuánto ganaría o perdería?". Solo considera el precio de las acciones que <b>todavía tienes</b> — no incluye lo que ya vendiste ni los dividendos cobrados (eso vive en "Rendimiento total", en el Histórico, para no contar nada dos veces).</p>
     <p class="muted small">Compara el precio promedio de compra con el precio actual de cada activo, en dólares${fx ? ". La ganancia/pérdida en reales se separa en el efecto del precio (el % siempre corresponde a comparar Compra vs Actual en dólares) y el efecto del cambio desde el día de cada compra, para que ambos números sean consistentes entre sí." : ". Configura el cambio USD/BRL arriba para verlo también en reales."}</p>
     ${
       anyApproximated
@@ -2322,7 +2323,7 @@ function renderPosicoes() {
 
       <div class="card">
         <h2 class="card-title">Sincronización en la nube</h2>
-        <p class="muted small">Tu cartera se sincroniza automáticamente con Supabase cada vez que guardás algo — historial, posiciones, transacciones, splits. Al abrir la app en cualquier dispositivo, se descarga lo nuevo automáticamente.</p>
+        <p class="muted small">Tu cartera se sincroniza automáticamente con Supabase cada vez que guardas algo — historial, posiciones, transacciones, splits. Al abrir la app en cualquier dispositivo, se descarga lo nuevo automáticamente.</p>
         <div class="sync-status-row">
           ${icon("cloud", 15, "up")} <span class="small up">Conectado a Supabase · São Paulo</span>
         </div>
@@ -2483,7 +2484,7 @@ function renderHistorico() {
   // se encadena el retorno DIARIO de cada registro ((gain del día + dividendos cobrados ese
   // día) ÷ saldo base de ESE día, que ya viene guardado en rows[].saldo de cada entrada del
   // historial) en vez de dividir la ganancia acumulada en R$ por el saldo actual. Así, a
-  // diferencia de "Ganancia/pérdida no realizada" (que solo mira lo que tenés HOY), este % sí
+  // diferencia de "Ganancia/pérdida no realizada" (que solo mira lo que tienes HOY), este % sí
   // cuenta lo que ya vendiste en el camino, y no se distorsiona cuando metes más plata a la
   // cartera o retiras — es el mismo método que usan las plataformas de inversión para mostrar
   // "tu rentabilidad" de forma comparable contra un índice o el CDI.
@@ -2654,7 +2655,7 @@ function renderHistorico() {
     ? `<div class="card total-return-card">
         <h2 class="card-title">Rendimiento total desde ${firstDate}</h2>
         <span class="total-return-value ${cum >= 0 ? "up" : "down"}">${cum >= 0 ? "+" : ""}${fmtBRL(cum)} (${fmtPct(totalReturnPct)})</span>
-        <p class="muted small" style="margin-top:2px">Responde: "¿cómo le fue a mi plata desde que empecé a invertir?". Encadena la variación de cada día (precio + cambio + dividendos cobrados ese día) con el método TWR (retorno ponderado en el tiempo), así no se distorsiona si metiste o sacaste plata en el medio. A diferencia de "Ganancia/pérdida no realizada" (en Posiciones, que solo mira el precio de lo que tenés HOY), acá también se cuenta la ganancia o pérdida de las acciones que ya vendiste en el camino, y los dividendos cobrados.</p>
+        <p class="muted small" style="margin-top:2px">Responde: "¿cómo le fue a mi plata desde que empecé a invertir?". Encadena la variación de cada día (precio + cambio + dividendos cobrados ese día) con el método TWR (retorno ponderado en el tiempo), así no se distorsiona si metiste o sacaste plata en el medio. A diferencia de "Ganancia/pérdida no realizada" (en Posiciones, que solo mira el precio de lo que tienes HOY), acá también se cuenta la ganancia o pérdida de las acciones que ya vendiste en el camino, y los dividendos cobrados.</p>
         ${spxResultHtml}
         ${cdiResultHtml}
       </div>`
@@ -2701,7 +2702,9 @@ function renderHistorico() {
         <td class="num ${h.total >= 0 ? "up" : "down"}"><b>${fmtBRL(h.total)}</b></td>
         <td>
           <button class="icon-btn" data-action="edit-entry" data-id="${h.id}" title="Editar registro">${icon("pencil", 14)}</button>
-          <button class="icon-btn" data-action="remove-entry" data-id="${h.id}" title="Eliminar registro">${icon("trash", 14)}</button>
+          ${hs.confirmRemoveId === h.id
+            ? `<button class="btn btn-ghost btn-sm" data-action="remove-entry" data-id="${h.id}" style="color:var(--down)">¿Eliminar?</button>`
+            : `<button class="icon-btn" data-action="remove-entry" data-id="${h.id}" title="Eliminar registro">${icon("trash", 14)}</button>`}
         </td>
       </tr>`
     )
@@ -3362,7 +3365,7 @@ async function checkMissingDividends() {
   p.dividendCheckStatus = "idle";
   p.missingDividends = found.sort((a, b) => new Date(b.date) - new Date(a.date));
   p.dividendCheckError = blocked
-    ? "Tu plan de Finnhub no incluye histórico de dividendos para estos activos (suele requerir un plan pago) — puedes seguir registrándolos a mano o por CSV."
+    ? "Tu plan de Finnhub no incluye histórico de dividendos para estos activos (suele requerir un plan pago) — puedes seguir registrándolos a mano."
     : found.length
     ? null
     : "No encontré dividendos pagados que no tengas ya registrados.";
@@ -3626,7 +3629,15 @@ function handleAction(action, el) {
     case "cancel-entry-edit": cancelEditEntry(); break;
     case "save-entry-edit": saveEntryEdit(); break;
     case "clear-history": clearHistoryAction(); break;
-    case "remove-entry": removeEntryAction(id); break;
+    case "remove-entry":
+      if (state.historico.confirmRemoveId === id) {
+        state.historico.confirmRemoveId = null;
+        removeEntryAction(id);
+      } else {
+        state.historico.confirmRemoveId = id;
+        render();
+      }
+      break;
     case "install-app": installApp(); break;
     case "retry-sync": retrySync(); break;
     case "dismiss-notice": state.notice = null; render(); break;
