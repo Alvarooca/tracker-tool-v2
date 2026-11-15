@@ -1169,6 +1169,7 @@ function resetHistoricoState() {
   state.historico = {
     confirmClear: false,
     confirmRemoveId: null,
+    taxDetailYear: null,
     importStatus: "idle",
     importProgressLabel: null,
     importMessage: null,
@@ -2390,6 +2391,106 @@ function savePositions() {
 /*  Render: HISTÓRICO tab                                                  */
 /* ---------------------------------------------------------------------- */
 
+// Ganancia/pérdida REALIZADA por cada venta: el costo de lo vendido es el promedio vigente en
+// ese momento (mismo criterio que recomputeCostBasisFromTransactions, pero por corretora). Solo
+// lee state.transactions; no escribe nada.
+function computeRealizedSales() {
+  const norm = (b) => String(b || "").trim().toLowerCase();
+  const groups = {};
+  const sales = [];
+  const txs = [...state.transactions].sort((a, b) => new Date(a.date) - new Date(b.date));
+  txs.forEach((t) => {
+    if (t.type !== "buy" && t.type !== "sell") return;
+    const key = `${t.ticker}|${norm(t.broker)}`;
+    const g = (groups[key] = groups[key] || { qty: 0, costUsd: 0, costBrl: 0, missingFx: false });
+    const txFx = typeof t.fx === "number" && t.fx > 0 ? t.fx : null;
+    if (t.type === "buy") {
+      g.qty += t.qty;
+      g.costUsd += t.qty * t.price;
+      if (txFx) g.costBrl += t.qty * t.price * txFx;
+      else g.missingFx = true;
+      return;
+    }
+    if (g.qty <= 0.0001) return; // venta sin compras anteriores registradas: no hay costo para calcular
+    const avgUsd = g.costUsd / g.qty;
+    const avgBrl = g.costBrl / g.qty;
+    const realizedUsd = t.qty * (t.price - avgUsd);
+    const realizedBrl = txFx && !g.missingFx ? t.qty * t.price * txFx - t.qty * avgBrl : null;
+    sales.push({ id: t.id, date: t.date, ticker: t.ticker, broker: t.broker || "", qty: t.qty, price: t.price, avgUsd, realizedUsd, realizedBrl });
+    g.costUsd -= avgUsd * t.qty;
+    g.costBrl -= avgBrl * t.qty;
+    g.qty -= t.qty;
+  });
+  return sales;
+}
+
+// Dividendos netos (después de la retención de EE. UU.) por año, en US$ y en R$ cuando hay cambio.
+function dividendsByYear() {
+  const tax = parseNum(state.posicoes.dividendTaxPct) || 0;
+  const out = {};
+  state.transactions.filter((t) => t.type === "dividend").forEach((t) => {
+    const y = dateToBrazilYMD(t.date).slice(0, 4);
+    const net = t.qty * t.price * (1 - tax / 100);
+    const fx = typeof t.fx === "number" && t.fx > 0 ? t.fx : null;
+    const d = (out[y] = out[y] || { usd: 0, brl: 0, missingFx: 0 });
+    d.usd += net;
+    if (fx) d.brl += net * fx;
+    else d.missingFx++;
+  });
+  return out;
+}
+
+function renderTaxSummary() {
+  const hs = state.historico;
+  const sales = computeRealizedSales();
+  const divs = dividendsByYear();
+  const yearOf = (iso) => dateToBrazilYMD(iso).slice(0, 4);
+  const years = [...new Set([...sales.map((s) => yearOf(s.date)), ...Object.keys(divs)])].sort((a, b) => b - a);
+  if (!years.length) return "";
+
+  let missingSales = 0;
+  let missingDivs = 0;
+  const rowsHtml = years.map((y) => {
+    const ys = sales.filter((s) => yearOf(s.date) === y);
+    const usd = ys.reduce((a, s) => a + s.realizedUsd, 0);
+    const known = ys.filter((s) => s.realizedBrl !== null);
+    const brl = known.reduce((a, s) => a + s.realizedBrl, 0);
+    missingSales += ys.length - known.length;
+    const d = divs[y] || { usd: 0, brl: 0, missingFx: 0 };
+    missingDivs += d.missingFx;
+    const open = hs.taxDetailYear === y;
+    const detail = open
+      ? ys
+          .slice()
+          .reverse()
+          .map((s) => `<tr><td colspan="6" class="small muted">${fmtShortDate(s.date)} · ${escapeHtml(s.ticker)}${s.broker ? " · " + escapeHtml(s.broker) : ""} · ${s.qty} a US$ ${s.price.toFixed(2)} (costo prom. US$ ${s.avgUsd.toFixed(2)}) · US$ ${s.realizedUsd.toFixed(2)} · ${s.realizedBrl === null ? "R$ sin cambio" : fmtBRL(s.realizedBrl)}</td></tr>`)
+          .join("")
+      : "";
+    return `<tr>
+        <td><b>${y}</b></td>
+        <td class="num small">${ys.length}</td>
+        <td class="num ${usd >= 0 ? "up" : "down"}">US$ ${usd.toFixed(2)}</td>
+        <td class="num ${brl >= 0 ? "up" : "down"}">${fmtBRL(brl)}</td>
+        <td class="num small">${fmtBRL(d.brl)}</td>
+        <td><button class="btn btn-ghost btn-sm" data-action="toggle-tax-detail" data-year="${y}">${open ? "Ocultar" : "Detalle"}</button></td>
+      </tr>${detail}`;
+  }).join("");
+
+  const missingNote = missingSales || missingDivs
+    ? `<div class="banner banner-warn" style="margin-top:10px">${icon("alert-triangle", 15)} ${missingSales ? `${missingSales} venta(s)` : ""}${missingSales && missingDivs ? " y " : ""}${missingDivs ? `${missingDivs} dividendo(s)` : ""} sin cambio histórico: aparecen en US$ pero no entran en R$.</div>`
+    : "";
+
+  return `<div class="card">
+    <h2 class="card-title">Resumen anual: ventas y dividendos</h2>
+    <p class="note">Ganancia realizada por venta, con el costo promedio de cada corretora (igual que Posiciones), y dividendos netos cobrados. Es solo referencia: no es asesoría tributaria; revísalo con tu contador antes de declarar.</p>
+    <div class="table-scroll"><table class="table">
+      <thead><tr><th>Año</th><th class="num">Ventas</th><th class="num">Ganancia US$</th><th class="num">Ganancia R$</th><th class="num">Dividendos R$</th><th></th></tr></thead>
+      <tbody>${rowsHtml}</tbody>
+    </table></div>
+    ${missingNote}
+  </div>`;
+}
+
 function renderHistorico() {
   const hs = state.historico;
   const importBtnLabel = hs.importStatus === "loading" ? (hs.importProgressLabel || "Buscando…") : "Importar histórico real";
@@ -2718,6 +2819,7 @@ function renderHistorico() {
         </div>`
       : "";
 
+  const taxSummaryHtml = renderTaxSummary();
   const staleHtml = (() => {
     const last = sorted[sorted.length - 1];
     const lastDay = last ? dateToBrazilYMD(last.date) : null;
@@ -2747,6 +2849,7 @@ function renderHistorico() {
         <button class="btn btn-ghost btn-sm" data-action="clear-history">${icon("trash", 13)} ${hs.confirmClear ? "¿Confirmar borrado?" : "Borrar historial"}</button>
       </div>
       ${totalReturnHtml}
+      ${taxSummaryHtml}
       <div class="card">
         <div class="card-title-row">
           <h2 class="card-title">Rendimiento acumulado (%)</h2>
@@ -3626,6 +3729,7 @@ function handleAction(action, el) {
       autoLoadBenchmarks();
       break;
     }
+    case "toggle-tax-detail": state.historico.taxDetailYear = state.historico.taxDetailYear === el.dataset.year ? null : el.dataset.year; render(); break;
     case "cancel-entry-edit": cancelEditEntry(); break;
     case "save-entry-edit": saveEntryEdit(); break;
     case "clear-history": clearHistoryAction(); break;
