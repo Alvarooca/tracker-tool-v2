@@ -361,7 +361,7 @@ const isNonTradingDay = (ymd) => {
 
 // Hora de Brasil (America/Sao_Paulo), calculada con Intl para que sea correcta sin importar
 // la zona horaria del dispositivo del usuario. Se usa para el guardado automático del
-// resultado diario después de las 20:00 y para decidir qué entrada del historial es "hoy".
+// resultado diario después de las 23:00 y para decidir qué entrada del historial es "hoy".
 const dateToBrazilYMD = (iso) => {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "America/Sao_Paulo",
@@ -799,7 +799,7 @@ function resetHojeState() {
   });
 
   // Si hoy (según la hora de Brasil) ya tiene un registro en el historial — guardado
-  // automáticamente después de las 20:00 — se muestra esa información directamente en vez de
+  // automáticamente después de las 23:00 — se muestra esa información directamente en vez de
   // la pantalla "idle". Así la variación por activo se mantiene visible siempre, incluso al
   // cambiar de pestaña o recargar la app, y solo cambia cuando se vuelve a tocar
   // "Buscar variación automáticamente" / "Actualizar variación" (eso solo refresca la vista,
@@ -1661,7 +1661,7 @@ function renderHojeReviewResult() {
 async function fetchLiveDayChange(opts = {}) {
   const h = state.hoje;
   // Solo se guarda/sobrescribe el historial cuando lo dispara el proceso automático de las
-  // 20:00 (opts.autoSave) o cuando el usuario activó el checkbox "Guardar automáticamente".
+  // 23:00 (opts.autoSave) o cuando el usuario activó el checkbox "Guardar automáticamente".
   // Tocar el botón "Actualizar variación" a mano SOLO refresca lo que se ve en pantalla — no
   // toca el historial, aunque hoy ya tuviera un registro guardado.
   const autoSave = !!opts.autoSave;
@@ -1980,7 +1980,7 @@ function renderDividendsCard() {
                  </div>`
                : ""
            }`
-        : `<p class="muted small">Todavía no hay dividendos registrados. Impórtalos en el CSV (type=dividend) o agrégalos en "Precio de compra" → tipo "Dividendo".</p>`
+        : `<p class="muted small">Todavía no hay dividendos registrados. Agrégalos en "Nueva compra" → tipo "Dividendo".</p>`
     }
     ${
       p.dividendCheckError
@@ -2225,16 +2225,8 @@ function renderPosicoes() {
       ${renderUnrealized(rows)}
 
       <div class="card">
-        <h2 class="card-title">Precio de compra</h2>
-        <p class="note">Importa un CSV con columnas symbol, date, type, qty y price (formato TradingView o Kinvo). Opcional: fx y broker.</p>
-        ${state.posicoes.importPurchasesMessage ? `<div class="banner banner-ok">${icon("check-circle", 15)} ${escapeHtml(state.posicoes.importPurchasesMessage)}</div>` : ""}
-        <div class="row-actions">
-          <button class="btn btn-ghost" data-action="trigger-import-purchases">${icon("refresh", 15)} Importar historial de compras (CSV)</button>
-        </div>
-        <input type="file" id="import-purchases-input" accept=".csv,text/csv" hidden>
-
+        <h2 class="card-title">Nueva compra</h2>
         <div class="tx-form">
-          <p class="muted small breakdown-subtitle">O agrega una compra, venta o dividendo nuevo</p>
           ${txForm.error ? `<div class="banner banner-warn">${icon("alert-triangle", 15)} ${escapeHtml(txForm.error)}</div>` : ""}
           <select class="input-cell tx-select" data-bind="txRowId">
             ${rows.map((r) => `<option value="${r.id}" ${txForm.rowId === r.id ? "selected" : ""}>${escapeHtml(r.ticker || "(sin ticker)")} · ${escapeHtml(r.broker || "—")}</option>`).join("")}
@@ -2723,9 +2715,20 @@ function renderHistorico() {
         </div>`
       : "";
 
+  const staleHtml = (() => {
+    const last = sorted[sorted.length - 1];
+    const lastDay = last ? dateToBrazilYMD(last.date) : null;
+    const hourBr = parseInt(new Intl.DateTimeFormat("en-US", { timeZone: "America/Sao_Paulo", hour: "numeric", hour12: false }).format(new Date()), 10);
+    const todayBr = brazilTodayYMD();
+    let expected = hourBr < AUTO_SAVE_HOUR_BRAZIL ? shiftDateDays(todayBr, -1) : todayBr;
+    while (isNonTradingDay(expected)) expected = shiftDateDays(expected, -1);
+    if (lastDay && lastDay >= expected) return "";
+    return `<div class="banner banner-warn">${icon("alert-triangle", 15)} El último día guardado es ${lastDay ? fmtShortDate(`${lastDay}T12:00:00`) : "—"} y debería existir un registro del ${fmtShortDate(`${expected}T12:00:00`)}. Revisa el cierre automático en Supabase.</div>`;
+  })();
   return `
     <div class="stack">
       ${editCardHtml}
+      ${staleHtml}
       ${importBanner}
       ${periodPillsHtml}
       <div class="card import-range-card">
@@ -2780,14 +2783,7 @@ function renderHistorico() {
     </div>`;
 }
 
-function addDemo() {
-  const demo = generateDemoEntries(state.portfolio);
-  state.history = [...state.history, ...demo].sort((a, b) => new Date(a.date) - new Date(b.date));
-  persistHistory();
-  render();
-}
-
-// MEJORA #1 — El guardado diario automático (a las 20:00 hora de Brasil) solo funciona si la
+// MEJORA #1 — El guardado diario automático (a las 23:00 hora de Brasil) solo funciona si la
 // app está abierta en ese momento. Si un día no se abrió, ese día queda sin registrar y se
 // rompe la reconstrucción "día a día" de la cartera. Esta función corre sola (sin que el
 // usuario toque nada) al abrir la app o al entrar a la pestaña "Historial", y rellena
@@ -3373,308 +3369,6 @@ async function checkMissingDividends() {
   render();
 }
 
-function importPurchasesFile(file) {
-  const p = state.posicoes;
-  const reader = new FileReader();
-  reader.onload = () => {
-    try {
-      const lines = String(reader.result).split(/\r?\n/).filter((l) => l.trim());
-      if (!lines.length) throw new Error("vacío");
-      // Algunos exportadores (p. ej. Excel configurado en español/portugués) usan ";" como
-      // separador en vez de ",". Se detecta mirando cuál aparece más veces en el encabezado.
-      const delimiter = (lines[0].match(/;/g) || []).length > (lines[0].match(/,/g) || []).length ? ";" : ",";
-      const header = parseCsvLine(lines[0], delimiter).map((h) => h.trim().toLowerCase());
-      const idx = {
-        symbol: header.indexOf("symbol"),
-        date: header.indexOf("date"),
-        type: header.indexOf("type"),
-        qty: header.indexOf("qty"),
-        price: header.indexOf("price"),
-        fx: header.indexOf("fx"), // opcional: Kinvo exporta esta columna con el cambio USD/BRL de cada operación
-        broker: header.indexOf("broker") !== -1 ? header.indexOf("broker") : header.indexOf("institution"), // opcional: corretora/institución de cada operación
-      };
-      if (idx.symbol === -1 || idx.type === -1 || idx.qty === -1 || idx.price === -1) {
-        throw new Error("Faltan columnas (symbol, type, qty, price)");
-      }
-
-      const txs = lines.slice(1).map((l) => parseCsvLine(l, delimiter)).filter((c) => c.length >= 4);
-      // sort chronologically so sells reduce the running average cost correctly, oldest first.
-      txs.sort((a, b) => (parseFlexibleDate(a[idx.date]) || 0) - (parseFlexibleDate(b[idx.date]) || 0));
-
-      // Some exports show Qty as a plain decimal (e.g. "80.96"). Others show it as an
-      // integer count of THOUSANDTHS of a share, with commas only as thousands grouping
-      // (e.g. "1,070" meaning 1.070 shares, "977" meaning 0.977 shares — no literal decimal
-      // point anywhere in the column). Detect which convention this file uses by checking
-      // whether any Qty value in the whole file contains a ".".
-      const qtyHasDecimalPoint = txs.some((cols) => String(cols[idx.qty] || "").includes("."));
-      const parseQty = (raw) => {
-        const s = String(raw ?? "").trim();
-        if (qtyHasDecimalPoint) return parseNum(s);
-        const intVal = parseFloat(s.replace(/,/g, ""));
-        return Number.isFinite(intVal) ? intVal / 1000 : 0;
-      };
-
-      // Keep a persisted record of every transaction (deduped), so the app remembers how far
-      // back your investing history goes — used e.g. to build the year filters in Historial.
-      // La clave de duplicados usa solo la FECHA (día calendario), no el timestamp completo:
-      // así una reimportación no crea un duplicado por una diferencia de horario entre cómo
-      // quedó guardada la transacción la primera vez y cómo se parsea ahora.
-      const txKey = (t) => `${t.ticker}|${String(t.date).slice(0, 10)}|${t.type}|${t.qty.toFixed(4)}|${t.price.toFixed(4)}|${String(t.broker || "").trim().toLowerCase()}`;
-      // Clave SIN corretora: se usa para reconocer una transacción que ya estaba guardada de
-      // una importación ANTERIOR sin columna "broker" (todas quedaron con broker: ""), cuando
-      // ahora se reimporta el MISMO archivo pero ya con la corretora agregada. Sin esto, la
-      // clave completa (que sí incluye broker) no coincide con la guardada antes → se trataba
-      // como una transacción nueva y se duplicaba la cantidad de acciones de cada ticker.
-      const txKeyNoBroker = (t) => `${t.ticker}|${String(t.date).slice(0, 10)}|${t.type}|${t.qty.toFixed(4)}|${t.price.toFixed(4)}`;
-      const existingKeys = new Set(state.transactions.map(txKey));
-      // Pool de transacciones YA guardadas sin corretora (broker vacío), agrupadas por su
-      // clave sin-broker, para poder "completarles" el broker en vez de duplicarlas. Se usa
-      // como cola por clave porque puede haber varias filas idénticas en la misma fecha.
-      const unbrokeredPool = new Map(); // noBrokerKey -> [index, index, ...] en state.transactions
-      state.transactions.forEach((t, i) => {
-        if (!String(t.broker || "").trim()) {
-          const k = txKeyNoBroker(t);
-          if (!unbrokeredPool.has(k)) unbrokeredPool.set(k, []);
-          unbrokeredPool.get(k).push(i);
-        }
-      });
-      let brokerFilledIn = 0;
-      let fxBackfilledFromCsv = 0;
-      let dividendsImported = 0;
-      txs.forEach((cols) => {
-        const rawSym = (cols[idx.symbol] || "").trim();
-        const sym = rawSym.includes(":") ? rawSym.split(":").pop() : rawSym;
-        if (!sym) return;
-        const type = (cols[idx.type] || "").trim().toLowerCase();
-        // "dividend" usa la misma columna "type" que buy/sell. El monto BRUTO (antes de la
-        // retención de EE. UU.) se guarda igual que una compra/venta: qty × price, donde price
-        // es el dividendo bruto por acción en US$ — así un split aplicado más tarde a ese
-        // ticker (qty×ratio, price÷ratio) sigue dejando el monto bruto total correcto.
-        if (type !== "buy" && type !== "sell" && type !== "dividend") return;
-        const dateRaw = cols[idx.date] || "";
-        const date = dateRaw ? (parseFlexibleDate(dateRaw) || new Date()).toISOString() : new Date().toISOString();
-        const fxFromFile = idx.fx !== -1 ? parseNum(cols[idx.fx]) || null : null;
-        // Si ya se registró un desdoblamiento para este ticker, la fila cruda del CSV (con la
-        // cantidad/precio originales, sin ajustar) se ajusta a la MISMA escala que ya tienen
-        // las transacciones guardadas — así una reimportación no agrega una versión duplicada
-        // y desajustada de una compra que ya estaba correctamente ajustada por el split.
-        // Aplicar splits a las transacciones antiguas para que queden en la misma escala
-        // que las acciones actuales. PERO: algunos exports (como Kinvo) ya vienen con
-        // cantidades post-split — en ese caso aplicar el split de nuevo las duplicaría.
-        // Detectamos esto comparando la cantidad neta del CSV (sin ajustar) contra la cantidad
-        // neta que resultaría de aplicar el split. Si el CSV ya tiene la cantidad correcta
-        // (post-split), NO aplicamos el ajuste.
-        const rawNetQty = txs
-          .filter(cols => {
-            const rawSym = (cols[idx.symbol] || '').trim();
-            const sym2 = rawSym.includes(':') ? rawSym.split(':').pop() : rawSym;
-            const type = (cols[idx.type] || '').trim().toLowerCase();
-            return sym2 === sym && (type === 'buy' || type === 'sell');
-          })
-          .reduce((acc, cols) => {
-            const type = (cols[idx.type] || '').trim().toLowerCase();
-            return acc + (type === 'buy' ? parseQty(cols[idx.qty]) : -parseQty(cols[idx.qty]));
-          }, 0);
-
-        const adjustedNetQty = txs
-          .filter(cols => {
-            const rawSym = (cols[idx.symbol] || '').trim();
-            const sym2 = rawSym.includes(':') ? rawSym.split(':').pop() : rawSym;
-            const type = (cols[idx.type] || '').trim().toLowerCase();
-            return sym2 === sym && (type === 'buy' || type === 'sell');
-          })
-          .reduce((acc, cols) => {
-            const rawSym = (cols[idx.symbol] || '').trim();
-            const sym2 = rawSym.includes(':') ? rawSym.split(':').pop() : rawSym;
-            const dateRaw = cols[idx.date] || '';
-            const date = dateRaw ? (parseFlexibleDate(dateRaw) || new Date()).toISOString() : new Date().toISOString();
-            const type = (cols[idx.type] || '').trim().toLowerCase();
-            const { qty: adjQ } = applySplitsToRawValue(sym2, date, parseQty(cols[idx.qty]), parseNum(cols[idx.price]));
-            return acc + (type === 'buy' ? adjQ : -adjQ);
-          }, 0);
-
-        // Si la cantidad neta ya ajustada es significativamente mayor que la cruda (más del 10%),
-        // el CSV viene con cantidades pre-split y hay que ajustar. Si son similares, ya viene post-split.
-        const csvAlreadyAdjusted = Math.abs(adjustedNetQty - rawNetQty) / (rawNetQty || 1) > 0.1
-          ? false  // hay diferencia grande → CSV es pre-split, aplicar ajuste
-          : true;  // son similares → CSV ya es post-split, NO ajustar
-
-        const { qty: adjQty, price: adjPrice } = csvAlreadyAdjusted
-          ? { qty: parseQty(cols[idx.qty]), price: parseNum(cols[idx.price]) }
-          : applySplitsToRawValue(sym, date, parseQty(cols[idx.qty]), parseNum(cols[idx.price]));
-        const brokerFromFile = idx.broker !== -1 ? (cols[idx.broker] || "").trim() : "";
-        const rec = { ticker: sym, date, type, qty: adjQty, price: adjPrice, fx: fxFromFile, broker: brokerFromFile };
-        const key = txKey(rec);
-        if (existingKeys.has(key)) {
-          // Ya estaba guardada exactamente así (mismo broker incluido) — solo completar el fx
-          // histórico si todavía faltaba, igual que antes.
-          if (fxFromFile) {
-            const existingIdx = state.transactions.findIndex((t) => txKey(t) === key && !(typeof t.fx === "number" && t.fx > 0));
-            if (existingIdx !== -1) {
-              state.transactions[existingIdx] = { ...state.transactions[existingIdx], fx: fxFromFile };
-              fxBackfilledFromCsv++;
-            }
-          }
-          return;
-        }
-        // No coincide con ninguna guardada con ESTE broker exacto. Antes de darla por nueva,
-        // ver si es la MISMA transacción que ya existe pero guardada sin corretora (de una
-        // importación anterior con un archivo que todavía no la traía) — en ese caso se le
-        // completa el broker en vez de crear una fila duplicada.
-        if (brokerFromFile) {
-          const noBrokerKey = txKeyNoBroker(rec);
-          const pool = unbrokeredPool.get(noBrokerKey);
-          if (pool && pool.length) {
-            const idxToUpdate = pool.shift();
-            const prev = state.transactions[idxToUpdate];
-            state.transactions[idxToUpdate] = { ...prev, broker: brokerFromFile, fx: prev.fx ?? fxFromFile };
-            existingKeys.delete(txKey(prev));
-            existingKeys.add(txKey(state.transactions[idxToUpdate]));
-            brokerFilledIn++;
-            return;
-          }
-        }
-        existingKeys.add(key);
-        state.transactions.push({ id: uid(), source: "csv", ...rec });
-        if (type === "dividend") dividendsImported++;
-      });
-      persistTransactions();
-
-      // Limpieza defensiva: si una importación ANTERIOR a este arreglo ya dejó guardada una
-      // versión cruda (sin ajustar) de alguna compra afectada por un split junto a la versión
-      // correcta, se elimina la cruda ahora.
-      const duplicatesRemoved = dedupeSplitDuplicateTransactions();
-
-      // El precio promedio se recalcula a partir de TODO el historial de transacciones ya
-      // persistido (no solo de las filas de este archivo), para que sea correcto incluso si
-      // el CSV importado es parcial o se reimporta más de una vez.
-      // También se recalcula la CANTIDAD de cada activo (suma de compras menos ventas),
-      // así la tabla de posiciones siempre es consistente con el historial de transacciones
-      // sin que el usuario tenga que ingresar cantidades manualmente.
-      // Si el archivo trae la columna broker/institution, se procesa por CADA PAR
-      // (ticker, corretora) por separado — ya no hay que adivinar cuál es la posición
-      // "dominante" cuando el mismo ticker está en más de una corretora: cada una se
-      // actualiza con su propio historial y su propia fila (se crea si todavía no existe).
-      const hasBrokerCol = idx.broker !== -1;
-      const pairsInFile = new Map(); // key -> { sym, broker }
-      txs.forEach((cols) => {
-        const rawSym = (cols[idx.symbol] || "").trim();
-        const sym = rawSym.includes(":") ? rawSym.split(":").pop() : rawSym;
-        if (!sym) return;
-        const broker = hasBrokerCol ? (cols[idx.broker] || "").trim() : "";
-        const key = sym + "\u0000" + broker;
-        if (!pairsInFile.has(key)) pairsInFile.set(key, { sym, broker });
-      });
-      state.splits.forEach((s) => {
-        const key = s.ticker + "\u0000";
-        if (!pairsInFile.has(key)) pairsInFile.set(key, { sym: s.ticker, broker: "" });
-      });
-
-      let matched = 0;
-      let created = 0;
-      const mixedBrokerWarnings = new Set(); // tickers con varias corretoras donde el archivo no distingue broker
-      const normBroker = (b) => String(b || "").trim().toLowerCase();
-      pairsInFile.forEach(({ sym, broker }) => {
-        const effectiveBroker = hasBrokerCol && broker ? broker : undefined;
-        const { avgCostUsd, avgCostBrl } = recomputeCostBasisFromTransactions(sym, effectiveBroker);
-
-        // Calcular cantidad neta desde transacciones (compras - ventas, ignorando dividendos),
-        // filtrando por corretora cuando corresponda.
-        const netQty = state.transactions
-          .filter((t) => t.ticker === sym && (t.type === "buy" || t.type === "sell") && (effectiveBroker == null || normBroker(t.broker) === normBroker(effectiveBroker)))
-          .reduce((acc, t) => acc + (t.type === "buy" ? t.qty : -t.qty), 0);
-
-        if (avgCostUsd === null && netQty <= 0.0001) return; // ticker (+corretora) sin posición activa
-
-        matched++;
-        const roundedQty = Math.round(netQty * 100000) / 100000; // 5 decimales
-
-        if (effectiveBroker) {
-          const applied = applyAvgCostToTickerRows(sym, avgCostUsd, avgCostBrl, effectiveBroker);
-          if (netQty > 0.0001) {
-            const targetRow = (state.posicoes?.rows || []).find((r) => r.ticker === sym && normBroker(r.broker) === normBroker(effectiveBroker));
-            if (targetRow) {
-              if (state.posicoes) {
-                state.posicoes.rows = state.posicoes.rows.map((r) => (r.id === targetRow.id ? { ...r, quantity: roundedQty } : r));
-              }
-              state.portfolio = state.portfolio.map((r) => (r.id === targetRow.id ? { ...r, quantity: roundedQty } : r));
-            } else {
-              // No existía ninguna fila para este ticker+corretora todavía: se crea.
-              const newRow = { id: uid(), ticker: sym, broker: effectiveBroker, quantity: roundedQty, price: "", saldo: 0, avgCost: avgCostUsd, avgCostBrl };
-              state.portfolio = [...state.portfolio, newRow];
-              if (state.posicoes) state.posicoes.rows = [...state.posicoes.rows, { ...newRow }];
-              created++;
-            }
-          }
-          if (!applied && netQty <= 0.0001) {
-            // sin cantidad y sin fila previa: nada que crear ni actualizar
-          }
-        } else {
-          // Sin columna broker en el archivo: comportamiento de siempre (posición dominante).
-          applyAvgCostToTickerRows(sym, avgCostUsd, avgCostBrl);
-          if (netQty > 0.0001) {
-            const rowsForTicker = (state.posicoes?.rows || []).filter((r) => r.ticker === sym);
-            const targetRow = rowsForTicker.length <= 1
-              ? rowsForTicker[0]
-              : rowsForTicker.reduce((a, b) => (parseNum(b.quantity) > parseNum(a.quantity) ? b : a));
-            if (targetRow) {
-              // netQty ya es el total COMBINADO de todas las corretoras para este ticker (el
-              // archivo no las distingue). Si el ticker tiene otras filas (otras corretoras)
-              // además de la dominante, esas cantidades YA están incluidas dentro de netQty —
-              // si se dejan intactas y además se le asigna el total completo a la fila
-              // dominante, ese ticker queda contado dos veces (una vez entero en la dominante,
-              // otra vez parcial en las demás), inflando el valor total de la cartera. Por eso
-              // se le asigna a la dominante solo el RESTO: netQty menos lo que ya tienen las
-              // otras filas de ese mismo ticker, para que la suma de todas las filas siga
-              // siendo exactamente netQty.
-              const otherRowsQty = rowsForTicker
-                .filter((r) => r.id !== targetRow.id)
-                .reduce((s, r) => s + (parseNum(r.quantity) || 0), 0);
-              const dominantQty = Math.max(0, Math.round((netQty - otherRowsQty) * 100000) / 100000);
-              if (otherRowsQty > 0.0001 && dominantQty < roundedQty - 0.0001) {
-                mixedBrokerWarnings.add(sym);
-              }
-              if (state.posicoes) {
-                state.posicoes.rows = state.posicoes.rows.map((r) => (r.id === targetRow.id ? { ...r, quantity: dominantQty } : r));
-              }
-              state.portfolio = state.portfolio.map((r) => (r.id === targetRow.id ? { ...r, quantity: dominantQty } : r));
-            }
-          }
-        }
-      });
-      if (state.posicoes) state.posicoes.dirty = true;
-      persistPortfolio();
-      resetPosicoesState();
-      state.posicoes.quotesError = matched || dividendsImported
-        ? null
-        : ["No encontré ningún ticker de ese archivo que coincida con tu carteira."];
-      state.posicoes.importPurchasesMessage = matched
-        ? `Precio de compra y cantidad actualizados para ${matched} activo(s)` +
-          (created ? ` (${created} posición(es) nueva(s) creada(s) por corretora)` : "") +
-          `.` +
-          (dividendsImported ? ` Se importaron ${dividendsImported} dividendo(s).` : "") +
-          (brokerFilledIn ? ` Se completó la corretora de ${brokerFilledIn} transacción(es) que ya tenías guardadas sin ese dato (en vez de duplicarlas).` : "") +
-          (fxBackfilledFromCsv ? ` Se completó el cambio histórico (columna "fx") de ${fxBackfilledFromCsv} transacción(es) que ya tenías guardadas.` : "") +
-          (duplicatesRemoved ? ` Se eliminaron ${duplicatesRemoved} transacción(es) duplicada(s) (de una versión sin ajustar por un desdoblamiento).` : "")
-        : dividendsImported
-        ? `Se importaron ${dividendsImported} dividendo(s).`
-        : null;
-      if (mixedBrokerWarnings.size) {
-        const list = [...mixedBrokerWarnings].join(", ");
-        state.posicoes.quotesError = [
-          ...(state.posicoes.quotesError || []),
-          `Este archivo no tiene columna "broker" y ${list} está(n) repartido(s) en más de una corretora en tu carteira: la cantidad se ajustó para no duplicar el total, pero revisa esas posiciones — si tus corretoras cambiaron, puede que la cantidad asignada a cada fila ya no sea exacta.`,
-        ];
-      }
-      render();
-    } catch (err) {
-      p.quotesError = ["No pude leer ese CSV. Revisa que tenga las columnas symbol, date, type, qty, price (formato de TradingView)."];
-      render();
-    }
-  };
-  reader.readAsText(file);
-}
-
 function importBackupFile(file) {
   const p = state.posicoes;
   const reader = new FileReader();
@@ -3716,34 +3410,6 @@ function importBackupFile(file) {
   reader.readAsText(file);
 }
 
-function csvEscape(v) {
-  const s = String(v ?? "");
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-}
-
-function exportCsv() {
-  const tickers = [...new Set(state.portfolio.map((p) => p.ticker).filter(Boolean))];
-  const header = ["fecha", "precios_brl", "cambio_brl", "total_brl", ...tickers.map((t) => `${t}_%`)];
-  const lines = [header.map(csvEscape).join(",")];
-  [...state.history]
-    .sort((a, b) => new Date(a.date) - new Date(b.date))
-    .forEach((h) => {
-      const pctByTicker = {};
-      (h.rows || []).forEach((r) => { pctByTicker[r.ticker] = r.changePct; });
-      const row = [
-        fmtFullDate(h.date),
-        h.priceTotal.toFixed(2),
-        h.fxGain.toFixed(2),
-        h.total.toFixed(2),
-        ...tickers.map((t) => (typeof pctByTicker[t] === "number" ? pctByTicker[t].toFixed(4) : "")),
-      ];
-      lines.push(row.map(csvEscape).join(","));
-    });
-  downloadBlob(lines.join("\n"), `pnl-historial-${todayYMD()}.csv`, "text/csv;charset=utf-8");
-}
-
-/* ---------------------------------------------------------------------- */
-/*  Top-level render & event wiring                                       */
 /* ---------------------------------------------------------------------- */
 
 function switchTab(tab) {
@@ -3824,7 +3490,6 @@ function syncHojeOnTabEnter() {
     return; // hay una vista previa sin guardar: no la pisamos
   }
   resetHojeState();
-  if (isMarketOpen() && state.hoje.status === "idle") fetchLiveDayChange();
 }
 
 function render() {
@@ -3925,7 +3590,6 @@ function handleAction(action, el) {
       });
       break;
     case "trigger-import-backup": document.getElementById("import-backup-input")?.click(); break;
-    case "trigger-import-purchases": document.getElementById("import-purchases-input")?.click(); break;
     case "add-transaction": addTransaction(); break;
     case "check-missing-dividends": checkMissingDividends(); break;
     case "toggle-dividends-expanded": state.posicoes.dividendsExpanded = !state.posicoes.dividendsExpanded; render(); break;
@@ -3947,9 +3611,7 @@ function handleAction(action, el) {
     case "select-ticker-result": selectTickerResult(el.dataset.symbol); break;
     case "fetch-quotes": fetchQuotes(); break;
     case "backfill-fx": backfillHistoricalFx(); break;
-    case "add-demo": addDemo(); break;
     case "import-real-history": importRealHistory(); break;
-    case "export-csv": exportCsv(); break;
     case "edit-entry": startEditEntry(id); break;
     case "compare-spx": compareSpx(); break;
     case "compare-cdi": compareCdi(); break;
@@ -4090,10 +3752,6 @@ root.addEventListener("change", (e) => {
     importBackupFile(e.target.files[0]);
     e.target.value = "";
   }
-  if (e.target.id === "import-purchases-input" && e.target.files?.[0]) {
-    importPurchasesFile(e.target.files[0]);
-    e.target.value = "";
-  }
 
   const txRowSel = e.target.closest('[data-bind="txRowId"]');
   if (txRowSel) { state.posicoes.txForm.rowId = txRowSel.value; render(); }
@@ -4132,55 +3790,6 @@ if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
     navigator.serviceWorker.register("./service-worker.js").catch(() => {});
   });
-}
-
-/* ---------------------------------------------------------------------- */
-/*  Guardado automático del resultado diario después de las 20:00 (Brasil) */
-/* ---------------------------------------------------------------------- */
-
-let autoSaveInProgress = false;
-
-async function maybeAutoSaveToday() {
-  if (autoSaveInProgress) return;
-  if (!isPastAutoSaveTime()) return;
-  if (isMarketClosedToday()) return; // fin de semana o feriado bursátil: nada nuevo que calcular
-  if (state.history.some((e) => dateToBrazilYMD(e.date) === brazilTodayYMD())) return; // hoy ya está guardado
-  if (state.hoje.fetchStatus === "loading") return;
-  if (state.hoje.status === "review") return; // hay una edición manual en curso, no interrumpir
-
-  // Si ya hay un resultado calculado en pantalla (por ejemplo el usuario buscó/pegó los datos
-  // pero no llegó a guardar), se usa ese mismo resultado en vez de volver a buscar cotizaciones.
-  if (state.hoje.status === "result" && state.hoje.result) {
-    autoSaveInProgress = true;
-    try {
-      saveHistoryAction();
-    } finally {
-      autoSaveInProgress = false;
-    }
-    return;
-  }
-
-  const finnhubKey = (state.posicoes.finnhubKey || "").trim();
-  const twelveKey = (state.posicoes.apiKey || "").trim();
-  if (!finnhubKey && !twelveKey) return; // sin claves configuradas no hay cómo calcular nada
-  // La clave de Twelve Data es obligatoria para el guardado AUTOMÁTICO: sin ella el cambio
-  // USD/BRL no se puede calcular y antes el registro se guardaba igual con "cambio: 0,00",
-  // quedando incorrecto para siempre en el historial (ver tarjeta "Registros"). Si falta,
-  // se espera al siguiente ciclo en vez de guardar un dato parcial/erróneo. El usuario
-  // siempre puede guardar manualmente desde "Hoy" si de verdad quiere omitir el cambio.
-  if (!twelveKey) return;
-
-  autoSaveInProgress = true;
-  try {
-    await fetchLiveDayChange({ autoSave: true });
-  } finally {
-    autoSaveInProgress = false;
-  }
-}
-
-function startAutoSaveWatcher() {
-  maybeAutoSaveToday();
-  setInterval(maybeAutoSaveToday, 60000);
 }
 
 // Auto-refresh de cotizaciones cada 5 minutos SOLO durante el horario de mercado de EE. UU.
@@ -4231,7 +3840,7 @@ function startAutoRefresh() {
 }
 
 // Cuando el usuario vuelve a la pestaña/ventana después de tenerla en segundo plano, puede
-// haber pasado más de 30 min y el timer interno puede haberse "pausado" (los navegadores
+// haber pasado más de 5 min y el timer interno puede haberse "pausado" (los navegadores
 // limitan los timers en tabs inactivas). Por eso al recuperar el foco también se refresca.
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") autoRefreshQuotes();
@@ -4718,7 +4327,6 @@ resetHojeState();
 resetPosicoesState();
 resetHistoricoState();
 render();
-// startAutoSaveWatcher(); // desactivado: el cierre lo guarda Supabase (cierre-diario)
 // autoFillHistoryGaps() deshabilitado: con Supabase el historial completo vive en la nube.
 // Correrlo automáticamente al abrir causaba corrupción de la app al intentar guardar
 // 1500+ entradas en localStorage. El historial se actualiza manualmente con "Importar histórico real".
@@ -4730,18 +4338,6 @@ startAutoRefresh();
 // se abría la app en cualquier dispositivo. El push solo ocurre cuando el usuario
 // toca explícitamente "Subir todo a la nube".
 syncPullFromCloud();
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  INSTRUCCIONES DE INTEGRACIÓN
-//  Buscar en index.html el bloque que dice:
-//
-//    // Eliminamos el Service Worker — causaba que versiones viejas…
-//    if ("serviceWorker" in navigator) {
-//      navigator.serviceWorker.getRegistrations().then(…)
-//    }
-//
-//  Reemplazarlo COMPLETAMENTE por este bloque:
-// ─────────────────────────────────────────────────────────────────────────────
 
 // ── Registro del Service Worker ──────────────────────────────────────────────
 if ("serviceWorker" in navigator) {
@@ -4830,14 +4426,6 @@ function showUpdateBanner() {
 
   document.body.appendChild(banner);
 }
-
-// ── Recibir la señal SKIP_WAITING desde el banner ────────────────────────────
-// El SW escucha este mensaje para activarse de inmediato cuando el usuario
-// aprieta "Actualizar" (en vez de esperar a que cierre todas las pestañas).
-// Esto ya está manejado en sw.js con self.skipWaiting() en el install,
-// pero el postMessage es el canal para forzarlo desde la página si fuera necesario.
-// (La línea de abajo va en sw.js, ya incluida — se deja aquí solo como referencia)
-// self.addEventListener("message", (e) => { if (e.data?.type === "SKIP_WAITING") self.skipWaiting(); });
 
 </script>
 </body>
