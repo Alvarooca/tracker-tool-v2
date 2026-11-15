@@ -111,6 +111,7 @@ html, body { margin: 0; padding: 0; background: var(--bg-app); }
 .upload-card, .center-card { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 10px; padding: 30px 16px; }
 .upload-text { color: var(--text-muted2); font-size: 13px; max-width: 340px; line-height: 1.5; }
 .upload-hint { color: var(--text-dim); font-size: 11px; max-width: 300px; line-height: 1.4; margin-top: -4px; }
+.note { color: var(--text-dim); font-size: 11.5px; line-height: 1.45; width: 100%; max-width: none; margin: 6px 0 0; }
 .paste-area { width: 100%; max-width: 360px; min-height: 70px; background: var(--bg-input); border: 1px solid var(--border-input); color: var(--text-primary); font-family: 'IBM Plex Mono', monospace; font-size: 12.5px; padding: 10px; border-radius: 8px; resize: vertical; }
 .paste-area:focus { outline: none; border-color: var(--accent-gold); }
 .divider-text { color: var(--text-dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; margin: 4px 0; }
@@ -389,7 +390,7 @@ const brazilHourMinute = () => {
   return { hour, minute: parseInt(map.minute, 10) };
 };
 
-const AUTO_SAVE_HOUR_BRAZIL = 20; // 8 PM hora de Brasil
+const AUTO_SAVE_HOUR_BRAZIL = 23; // 11 PM hora de Brasil (cierre automático en Supabase)
 const isPastAutoSaveTime = () => brazilHourMinute().hour >= AUTO_SAVE_HOUR_BRAZIL;
 
 const escapeHtml = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -1164,10 +1165,7 @@ function getPeriodFilteredHistory(periodFilter) {
 }
 
 function resetHistoricoState() {
-  const earliestTx = state.transactions.length
-    ? state.transactions.reduce((min, t) => (t.date < min ? t.date : min), state.transactions[0].date)
-    : null;
-  const defaultFrom = earliestTx ? earliestTx.slice(0, 10) : new Date(Date.now() - 14 * 86400000).toISOString().slice(0, 10);
+  const prev = state.historico || {};
   state.historico = {
     confirmClear: false,
     importStatus: "idle",
@@ -1186,10 +1184,10 @@ function resetHistoricoState() {
     // Cachea el resultado de "Comparar con S&P 500/CDI" por período (ej. "2023", "2024") para
     // años ya finalizados: una vez calculado, no hace falta tocar el botón de nuevo al volver
     // a esa pestaña — ver comparisonCache más abajo.
-    spxCache: {},
-    cdiCache: {},
+    spxCache: prev.spxCache || {},
+    cdiCache: prev.cdiCache || {},
     periodFilter: "all",
-    importFromDate: defaultFrom,
+    importFromDate: todayYMD(),
     importToDate: todayYMD(),
     autoFillNotice: null,
     recordsExpanded: false,
@@ -1197,18 +1195,39 @@ function resetHistoricoState() {
   };
 }
 
+// Comparaciones con el S&P 500 (SPY vía Twelve Data) y con el CDI (Banco Central). Se cargan
+// solas al entrar a Historial y al cambiar de período. Cada período guarda su resultado en
+// caché: los años ya cerrados no se vuelven a consultar y el resto se refresca como máximo
+// una vez por hora, para no gastar créditos de la API.
+const BENCHMARK_TTL_MS = 60 * 60 * 1000;
+
+function benchmarkIsStale(entry, finished) {
+  if (!entry) return true;
+  if (finished) return false;
+  return Date.now() - (entry.at || 0) > BENCHMARK_TTL_MS;
+}
+
+function autoLoadBenchmarks() {
+  const hs = state.historico;
+  if (!hs) return;
+  const period = hs.periodFilter;
+  const finished = /^\d{4}$/.test(period) && Number(period) < new Date().getFullYear();
+  if (hs.spxStatus !== "loading" && benchmarkIsStale(hs.spxCache[period], finished)) compareSpx();
+  if (hs.cdiStatus !== "loading" && benchmarkIsStale(hs.cdiCache[period], finished)) compareCdi();
+}
+
 async function compareSpx() {
   const hs = state.historico;
+  const period = hs.periodFilter;
   const twelveKey = (state.posicoes.apiKey || "").trim();
   if (!twelveKey) {
-    hs.spxError = "Configura tu clave de Twelve Data en la pestaña Posiciones primero.";
+    hs.spxCache[period] = { pct: null, error: "Configura tu clave de Twelve Data en la pestaña Posiciones para ver el S&P 500.", at: Date.now() };
     render();
     return;
   }
-  const periodFiltered = getPeriodFilteredHistory(hs.periodFilter);
+  const periodFiltered = getPeriodFilteredHistory(period);
   if (!periodFiltered.length) return;
   hs.spxStatus = "loading";
-  hs.spxError = null;
   render();
   try {
     const start = periodFiltered[0].date.slice(0, 10);
@@ -1222,25 +1241,20 @@ async function compareSpx() {
     const first = parseFloat(byDate[0].close);
     const last = parseFloat(byDate[byDate.length - 1].close);
     if (!first) throw new Error("Dato inválido");
-    hs.spxPct = ((last - first) / first) * 100;
-    hs.spxCache[hs.periodFilter] = { pct: hs.spxPct, error: null };
+    hs.spxCache[period] = { pct: ((last - first) / first) * 100, error: null, at: Date.now() };
   } catch (err) {
-    hs.spxError = err.message || "No pude comparar con el S&P 500 (sin conexión).";
-    hs.spxCache[hs.periodFilter] = { pct: null, error: hs.spxError };
+    hs.spxCache[period] = { pct: null, error: err.message || "No pude comparar con el S&P 500 (sin conexión).", at: Date.now() };
   }
   hs.spxStatus = "idle";
   render();
 }
 
-// MEJORA #4 — Comparación contra el CDI, vía la API gratuita y sin clave del Banco Central
-// (serie 12 = CDI diario, % al día). Algunos navegadores pueden bloquear esta llamada por
-// CORS si el Banco Central no autoriza el origen — en ese caso se avisa.
 async function compareCdi() {
   const hs = state.historico;
-  const periodFiltered = getPeriodFilteredHistory(hs.periodFilter);
+  const period = hs.periodFilter;
+  const periodFiltered = getPeriodFilteredHistory(period);
   if (!periodFiltered.length) return;
   hs.cdiStatus = "loading";
-  hs.cdiError = null;
   render();
   try {
     const toBcbDate = (ymd) => { const [y, m, d] = ymd.split("-"); return `${d}/${m}/${y}`; };
@@ -1256,11 +1270,9 @@ async function compareCdi() {
       const v = parseFloat(String(d.valor).replace(",", "."));
       if (Number.isFinite(v)) factor *= 1 + v / 100;
     });
-    hs.cdiPct = (factor - 1) * 100;
-    hs.cdiCache[hs.periodFilter] = { pct: hs.cdiPct, error: null };
+    hs.cdiCache[period] = { pct: (factor - 1) * 100, error: null, at: Date.now() };
   } catch (err) {
-    hs.cdiError = "No pude buscar el CDI automáticamente (puede ser un bloqueo de CORS del navegador a la API del Banco Central).";
-    hs.cdiCache[hs.periodFilter] = { pct: null, error: hs.cdiError };
+    hs.cdiCache[period] = { pct: null, error: "No pude buscar el CDI automáticamente (puede ser un bloqueo de CORS del navegador a la API del Banco Central).", at: Date.now() };
   }
   hs.cdiStatus = "idle";
   render();
@@ -1475,39 +1487,80 @@ function renderTickerTape(portfolio, lastEntry) {
 /* ---------------------------------------------------------------------- */
 
 function renderHoje() {
+  // Con el mercado cerrado (fin de semana, feriado o fuera de horario) se muestra la última
+  // sesión registrada. Con el mercado abierto, la variación se actualiza sola cada 5 minutos.
+  if (!isMarketOpen()) return `<div class="stack">${renderLastSession()}</div>`;
+
   const h = state.hoje;
   let inner = "";
-
   if (h.status === "idle") {
-    const fetchLabel = h.fetchStatus === "loading" ? (h.fetchProgressLabel || "Buscando…") : "Buscar variación automáticamente";
+    const loading = h.fetchStatus === "loading";
     inner = `
       <div class="card upload-card">
         ${h.error ? `<div class="banner banner-warn">${icon("alert-triangle", 15)} ${escapeHtml(h.error)}</div>` : ""}
-        ${isMarketClosedToday() ? `<div class="banner banner-warn">${icon("alert-triangle", 15)} Hoy ${marketClosedReason()}: el mercado está cerrado. La búsqueda automática traería el último cierre disponible, no el de hoy.</div>` : ""}
-        ${
-          isPastAutoSaveTime() && !isMarketClosedToday() && !(state.posicoes.apiKey || "").trim()
-            ? `<div class="banner banner-warn">${icon("alert-triangle", 15)} Ya pasaron las ${AUTO_SAVE_HOUR_BRAZIL}:00 pero falta tu clave de Twelve Data (pestaña Posiciones): sin ella no se puede calcular el cambio USD/BRL, así que el guardado automático de hoy está en espera. Configúrala o usa "Buscar variación automáticamente" abajo (quedará con cambio en 0 si sigue sin clave).</div>`
-            : ""
-        }
-        <div class="banner banner-ok">${icon("check-circle", 15)} A partir de las ${AUTO_SAVE_HOUR_BRAZIL}:00 (hora de Brasil) la app calcula y guarda el resultado de hoy automáticamente en el historial, sin necesidad de tocar nada. Las opciones de abajo solo muestran una vista previa, sin guardar nada.</div>
-        ${icon("camera", 28, "muted")}
-        <p class="upload-text">Mira la variación de hoy buscando las cotizaciones automáticamente, pegando los números que ya tienes, o llenando manualmente.</p>
-        <button class="btn btn-primary" data-action="fetch-live-day-change" ${h.fetchStatus === "loading" ? "disabled" : ""}>
-          ${icon("refresh", 15, h.fetchStatus === "loading" ? "spin" : "")} ${fetchLabel}
+        ${icon("refresh", 28, "muted")}
+        <p class="upload-text">El mercado está abierto. La variación se actualiza sola cada 5 minutos.</p>
+        <button class="btn btn-primary" data-action="fetch-live-day-change" ${loading ? "disabled" : ""}>
+          ${icon("refresh", 15, loading ? "spin" : "")} ${loading ? (h.fetchProgressLabel || "Buscando…") : "Buscar variación ahora"}
         </button>
-        <p class="upload-hint">Usa las claves de Finnhub (acciones) y Twelve Data (cambio) configuradas en la pestaña Posiciones.</p>
-        <div class="divider-text">o</div>
-        <textarea class="paste-area" data-bind="paste" placeholder="Pega aquí: PG:0.86 KO:0.11 WMB:0.64 USB:2.27 TM:0 ARCC:1.00 ARKB:0 USDBRL:-0.73">${escapeHtml(h.pasteText)}</textarea>
-        <button class="btn btn-primary" data-action="parse-pasted" ${h.pasteText.trim() ? "" : "disabled"}>Procesar datos pegados</button>
-        <p class="upload-hint">Consejo: copia los porcentajes de variación del día de cada activo y del dólar (USDBRL) y pega todo de una vez.</p>
-        <div class="divider-text">o</div>
-        <button class="btn btn-ghost" data-action="start-manual">${icon("pencil", 15)} Llenar manualmente</button>
+        <p class="upload-hint">Usa las claves de Finnhub y Twelve Data configuradas en Posiciones.</p>
       </div>`;
-  } else if (h.status === "review" || h.status === "result" || h.status === "saved") {
+  } else {
     inner = renderHojeReviewResult();
   }
-
   return `<div class="stack">${inner}</div>`;
+}
+
+// Última sesión con datos: el día hábil más reciente guardado en el historial.
+function lastClosedEntry() {
+  const today = brazilTodayYMD();
+  return [...state.history]
+    .filter((e) => {
+      const day = dateToBrazilYMD(e.date);
+      return day <= today && !isNonTradingDay(day) && Array.isArray(e.rows) && e.rows.length > 0;
+    })
+    .sort((a, b) => new Date(b.date) - new Date(a.date))[0] || null;
+}
+
+function renderLastSession() {
+  const entry = lastClosedEntry();
+  if (!entry) {
+    return `<div class="card empty-state"><p>Todavía no hay una sesión registrada.</p><p class="muted small">La variación aparecerá aquí cuando el mercado abra.</p></div>`;
+  }
+  const sessionDay = fmtDateWithYear(`${dateToBrazilYMD(entry.date)}T12:00:00`);
+  const note = isMarketClosedToday()
+    ? `Hoy ${marketClosedReason()}. Se muestra el último día hábil registrado.`
+    : "El mercado está cerrado en este momento. Se muestra la última sesión registrada.";
+  const rowsHtml = [...entry.rows]
+    .sort((a, b) => (b.saldo || 0) - (a.saldo || 0))
+    .map((r) => `<tr>
+        <td><div class="ticker-cell">${avatarHtml(r.ticker, state.posicoes?.logos?.[r.ticker], 20)}<span><b>${escapeHtml(r.ticker)}</b><span class="muted small"> · ${escapeHtml(r.broker || "")}</span></span></div></td>
+        <td class="num"><span class="${r.changePct >= 0 ? "up" : "down"}">${fmtPct(r.changePct)}</span></td>
+        <td class="num ${r.gain >= 0 ? "up" : "down"}">${fmtBRL(r.gain)}</td>
+      </tr>`)
+    .join("");
+  return `<div class="card">
+    <div class="banner banner-warn">${icon("alert-triangle", 15)} ${escapeHtml(note)}</div>
+    <div class="card-title-row">
+      <h2 class="card-title">Variación del día · ${sessionDay}</h2>
+    </div>
+    <div class="table-scroll"><table class="table">
+      <thead><tr><th>Activo</th><th class="num">% día</th><th class="num">Resultado</th></tr></thead>
+      <tbody>
+        ${rowsHtml}
+        <tr class="row-fx">
+          <td><b>USD/BRL</b><span class="muted small"> · cambio del día</span></td>
+          <td class="num"><span class="${entry.fxPct >= 0 ? "up" : "down"}">${fmtPct(entry.fxPct)}</span></td>
+          <td class="num ${entry.fxGain >= 0 ? "up" : "down"}">${fmtBRL(entry.fxGain)}</td>
+        </tr>
+      </tbody>
+    </table></div>
+    <div class="summary">
+      <div class="summary-line"><span>Variación por precios</span><span class="${entry.priceTotal >= 0 ? "up" : "down"}">${fmtBRL(entry.priceTotal)}</span></div>
+      <div class="summary-line"><span>Efecto dólar (${fmtPct(entry.fxPct)})</span><span class="${entry.fxGain >= 0 ? "up" : "down"}">${fmtBRL(entry.fxGain)}</span></div>
+      <div class="summary-line summary-total"><span>Total</span><span class="${entry.total >= 0 ? "up" : "down"}">${fmtBRL(entry.total)}</span></div>
+    </div>
+  </div>`;
 }
 
 function renderHojeReviewResult() {
@@ -1603,16 +1656,6 @@ function renderHojeReviewResult() {
     ${tableHtml}
     ${footer}
   </div>`;
-}
-
-function startManual() {
-  const map = {};
-  state.portfolio.forEach((p) => (map[p.id] = "0"));
-  state.hoje.reviewMap = map;
-  state.hoje.fxPctInput = "0";
-  state.hoje.error = null;
-  state.hoje.status = "review";
-  render();
 }
 
 async function fetchLiveDayChange(opts = {}) {
@@ -1742,13 +1785,21 @@ async function fetchLiveDayChange(opts = {}) {
   h.error = errors.length ? errors.join(" ") : null;
   h.fetchStatus = "idle";
 
-  // Notificación push si algún activo varía más del 3% (en cualquier dirección)
-  const bigMovers = Object.entries(pctByTicker)
-    .filter(([, d]) => Math.abs(d.pct) >= 3)
-    .sort((a, b) => Math.abs(b[1].pct) - Math.abs(a[1].pct));
-  if (bigMovers.length) {
-    const lines = bigMovers.map(([sym, d]) => `${sym} ${d.pct >= 0 ? "+" : ""}${d.pct.toFixed(2)}%`).join(" · ");
-    sendPushNotification("⚠️ Movimiento fuerte en tu cartera", lines, "pnl-alert");
+  // Notificación push si algún activo varía más del 3%: una sola vez por activo y día
+  // (con actualizaciones cada 5 minutos, sin este control la misma alerta se repetiría)
+  {
+    const today = brazilTodayYMD();
+    let notified = [];
+    try { notified = JSON.parse(localStorage.getItem("pnl-movers-notified") || "[]").filter((k) => k.startsWith(today)); } catch (_) {}
+    const fresh = Object.entries(pctByTicker)
+      .filter(([sym, d]) => Math.abs(d.pct) >= 3 && !notified.includes(`${today}|${sym}`))
+      .sort((a, b) => Math.abs(b[1].pct) - Math.abs(a[1].pct));
+    if (fresh.length) {
+      fresh.forEach(([sym]) => notified.push(`${today}|${sym}`));
+      try { localStorage.setItem("pnl-movers-notified", JSON.stringify(notified)); } catch (_) {}
+      const lines = fresh.map(([sym, d]) => `${sym} ${d.pct >= 0 ? "+" : ""}${d.pct.toFixed(2)}%`).join(" · ");
+      sendPushNotification("⚠️ Movimiento fuerte en tu cartera", lines, "pnl-alert");
+    }
   }
   // Al buscar automáticamente ya se muestra el resultado calculado por activo de inmediato
   // (sin un paso intermedio de revisión manual) — sigue pudiéndose ajustar con el lápiz "Editar valores".
@@ -1757,31 +1808,6 @@ async function fetchLiveDayChange(opts = {}) {
   if (autoSave && !h.error) {
     saveHistoryAction();
   }
-}
-
-function parsePasted() {
-  const text = state.hoje.pasteText;
-  const regex = /([A-Za-zÀ-ÿ\/]{2,12})\s*[:=]\s*([+-]?\d+(?:[.,]\d+)?)\s*%?/g;
-  const found = {};
-  let m;
-  while ((m = regex.exec(text)) !== null) found[m[1].toUpperCase()] = parseNum(m[2]);
-  if (!Object.keys(found).length) {
-    state.hoje.error = "No pude reconocer ningún valor en ese texto. Revisa el formato e intenta de nuevo.";
-    render();
-    return;
-  }
-  const map = {};
-  state.portfolio.forEach((p) => {
-    const v = found[p.ticker.toUpperCase()];
-    map[p.id] = typeof v === "number" ? String(v) : "0";
-  });
-  state.hoje.reviewMap = map;
-  const fx = found["USDBRL"] ?? found["USD/BRL"] ?? found["USD"];
-  state.hoje.fxPctInput = typeof fx === "number" ? String(fx) : "0";
-  state.hoje.error = null;
-  // Pegar datos también muestra el resultado calculado de inmediato (vista previa) — nunca
-  // se guarda en el historial desde aquí; eso solo lo hace el proceso automático de las 20:00.
-  compute();
 }
 
 function compute() {
@@ -2175,8 +2201,8 @@ function renderPosicoes() {
           <input class="input-cell input-apikey" type="password" autocomplete="off" data-bind="apiKey" value="${escapeAttr(p.apiKey)}" placeholder="Clave de API de Twelve Data (cambio)">
           <a class="muted small" href="https://twelvedata.com/pricing" target="_blank" rel="noopener">Crear clave gratis ↗</a>
         </div>
-        <p class="upload-hint">El precio (US$) de cada posición se completa automáticamente al actualizar las cotizaciones, pero puedes escribir encima si quieres. Sin precio y cambio, el valor vuelve a ser editable manualmente.</p>
-        <p class="upload-hint">Los precios de las acciones vienen de Finnhub (60 consultas/min gratis) y el cambio USD/BRL de Twelve Data (8/min, pero acá solo se pide ese único símbolo).</p>
+        <p class="note">El precio de cada posición se completa al actualizar; puedes editarlo.</p>
+        <p class="note">Acciones: Finnhub · Cambio USD/BRL: Twelve Data.</p>
       </div>
 
       <div class="card">
@@ -2200,7 +2226,7 @@ function renderPosicoes() {
 
       <div class="card">
         <h2 class="card-title">Precio de compra</h2>
-        <p class="muted small">Importa tu historial de compras/ventas/dividendos (CSV con columnas symbol, date, type, qty, price — formato de TradingView, o de Kinvo si además incluye la columna "fx" con el cambio histórico; acepta "," o ";" de separador). En "type" usa buy, sell o dividend; para dividendos, "price" es el monto bruto por acción en US$ antes de la retención de EE. UU. Si agregás una columna opcional "broker" (o "institution") con el nombre de la corretora de cada operación, la app actualiza (o crea) la fila exacta de esa corretora en vez de adivinar cuál es la posición dominante cuando el mismo ticker está repartido en más de una.</p>
+        <p class="note">Importa un CSV con columnas symbol, date, type, qty y price (formato TradingView o Kinvo). Opcional: fx y broker.</p>
         ${state.posicoes.importPurchasesMessage ? `<div class="banner banner-ok">${icon("check-circle", 15)} ${escapeHtml(state.posicoes.importPurchasesMessage)}</div>` : ""}
         <div class="row-actions">
           <button class="btn btn-ghost" data-action="trigger-import-purchases">${icon("refresh", 15)} Importar historial de compras (CSV)</button>
@@ -2238,7 +2264,7 @@ function renderPosicoes() {
             <input class="input-cell tx-date" type="date" data-bind="txDate" value="${escapeAttr(txForm.date)}" style="text-align:left">
             <input class="input-cell" inputmode="decimal" data-bind="txFx" placeholder="Cambio USD/BRL (opcional)" value="${escapeAttr(txForm.fx)}">
           </div>
-          <p class="upload-hint" style="margin-top:-4px">Si dejás el cambio vacío: para hoy se usa el que tengas configurado arriba; para una fecha pasada, queda pendiente hasta que uses "Buscar cambios históricos".</p>
+          <p class="note">Sin cambio: se usa el de hoy. En fechas pasadas queda pendiente hasta "Buscar cambios históricos".</p>
           ${
             txForm.type === "dividend"
               ? (() => {
@@ -2246,15 +2272,15 @@ function renderPosicoes() {
                   const taxPct = parseNum(state.posicoes.dividendTaxPct) || 0;
                   const net = gross * (1 - taxPct / 100);
                   return gross
-                    ? `<p class="upload-hint">Bruto: US$ ${gross.toFixed(2)} · Retención EE. UU. (${fmtPct(taxPct)}): −US$ ${(gross - net).toFixed(2)} · <b>Neto: US$ ${net.toFixed(2)}</b></p>`
-                    : `<p class="upload-hint">El dividendo NO cambia la cantidad de acciones de la posición; solo se registra como ingreso. La retención de EE. UU. se aplica sobre el monto bruto (configúrala abajo, en "Dividendos recibidos").</p>`;
+                    ? `<p class="note">Bruto: US$ ${gross.toFixed(2)} · Retención EE. UU. (${fmtPct(taxPct)}): −US$ ${(gross - net).toFixed(2)} · <b>Neto: US$ ${net.toFixed(2)}</b></p>`
+                    : `<p class="note">El dividendo no cambia las acciones; se registra como ingreso.</p>`;
                 })()
               : ""
           }
           <div class="row-actions">
             <button class="btn btn-primary" data-action="add-transaction">${icon("plus", 15)} Agregar transacción</button>
           </div>
-          <p class="upload-hint">${txForm.type === "dividend" ? "Se guarda como ingreso de dividendo; no cambia la cantidad de acciones." : "Actualiza la cantidad y recalcula el precio promedio de compra de esa posición (método costo promedio). Recuerda tocar \"Guardar posiciones\" después para que quede guardado."}</p>
+          <p class="note">${txForm.type === "dividend" ? "Ingreso de dividendo: no cambia las acciones." : "Actualiza cantidad y precio promedio. Luego toca Guardar posiciones."}</p>
         </div>
       </div>
 
@@ -2268,7 +2294,7 @@ function renderPosicoes() {
       </div>
       ${p.advancedExpanded ? `<div class="card">
         <h2 class="card-title">Desdoblamientos de acciones (splits)</h2>
-        <p class="muted small">Cuando un activo hace un desdoblamiento (ej. ARKB hizo un 3-por-1 el 16/06/2025), el precio promedio de compra calculado con tus compras antiguas queda en una escala distinta a la de las acciones actuales, y la ganancia/pérdida no realizada se ve absurdamente alta o baja. Regístralo aquí para corregirlo: se ajustan las transacciones de ese activo anteriores a la fecha y se recalcula el precio promedio.</p>
+        <p class="note">Ajusta las compras anteriores a la fecha y recalcula el precio promedio.</p>
         ${
           state.splits.length
             ? `<div class="table-scroll"><table class="table">
@@ -2295,7 +2321,7 @@ function renderPosicoes() {
           <input class="input-cell tx-date" type="date" data-bind="splitDate" value="${escapeAttr(state.posicoes.splitForm.date)}" style="text-align:left">
           <input class="input-cell" inputmode="decimal" data-bind="splitRatio" placeholder="Proporción (ej. 3)" value="${escapeAttr(state.posicoes.splitForm.ratio)}">
         </div>
-        <p class="upload-hint">Proporción = acciones nuevas por cada acción antigua. Un desdoblamiento 3-por-1 (como el de ARKB) es "3". Un desdoblamiento inverso 1-por-2 es "0,5".</p>
+        <p class="note">Proporción: acciones nuevas por cada antigua (3-por-1 = 3; inverso 1-por-2 = 0,5).</p>
         <div class="row-actions">
           <button class="btn btn-ghost btn-sm" data-action="dedupe-splits" title="Por si una importación anterior dejó una versión sin ajustar de alguna compra junto a la ya corregida">${icon("trash", 13)} Quitar duplicados de un desdoblamiento</button>
           <button class="btn btn-primary btn-sm" data-action="add-split">${icon("plus", 13)} Aplicar desdoblamiento</button>
@@ -2399,13 +2425,12 @@ function renderHistorico() {
     return `
       <div class="card empty-state">
         <p>Todavía no hay resultados guardados.</p>
-        <p class="muted small">Calcula el resultado de hoy en la pestaña "Hoy" y guárdalo para empezar el historial, importa los últimos días reales, o prueba la app con datos ficticios.</p>
+        <p class="muted small">Usa el botón de abajo para importar los últimos días reales.</p>
         ${importBanner}
         ${importDateRangeHtml}
         <button class="btn btn-primary" style="margin-top:14px" data-action="import-real-history" ${hs.importStatus === "loading" ? "disabled" : ""}>
           ${icon("refresh", 15, hs.importStatus === "loading" ? "spin" : "")} ${importBtnLabel}
         </button>
-        <button class="btn btn-ghost" style="margin-top:8px" data-action="add-demo">${icon("sparkles", 15)} Generar datos de prueba (14 días)</button>
       </div>`;
   }
 
@@ -2578,20 +2603,26 @@ function renderHistorico() {
 
   const totalReturnPct = (twrFactor - 1) * 100;
   const firstDate = periodFiltered.length ? fmtFullDate(periodFiltered[0].date) : "";
-  const spxLabel = hs.spxStatus === "loading" ? "Comparando…" : "Comparar con S&P 500";
-  const spxResultHtml = hs.spxError
-    ? `<p class="small down" style="margin-top:8px">${escapeHtml(hs.spxError)}</p>`
-    : hs.spxPct !== null
-    ? `<p class="small muted" style="margin-top:8px">S&amp;P 500 en el mismo período: <span class="${hs.spxPct >= 0 ? "up" : "down"}"><b>${fmtPct(hs.spxPct)}</b></span> ${
-        cum >= 0 === hs.spxPct >= 0 ? (totalReturnPct > hs.spxPct ? "— le vas ganando 🎯" : "— el índice te va ganando") : ""
+  const spxEntry = hs.spxCache[hs.periodFilter];
+  const spxPct = spxEntry?.pct ?? null;
+  const spxError = spxEntry?.error ?? null;
+  const spxLabel = hs.spxStatus === "loading" ? "Actualizando…" : "Actualizar S&P 500";
+  const spxResultHtml = spxError
+    ? `<p class="small down" style="margin-top:8px">${escapeHtml(spxError)}</p>`
+    : spxPct !== null
+    ? `<p class="small muted" style="margin-top:8px">S&amp;P 500 en el mismo período: <span class="${spxPct >= 0 ? "up" : "down"}"><b>${fmtPct(spxPct)}</b></span> ${
+        cum >= 0 === spxPct >= 0 ? (totalReturnPct > spxPct ? "— le vas ganando 🎯" : "— el índice te va ganando") : ""
       }</p>`
     : "";
-  const cdiLabel = hs.cdiStatus === "loading" ? "Comparando…" : "Comparar con CDI";
-  const cdiResultHtml = hs.cdiError
-    ? `<p class="small down" style="margin-top:8px">${escapeHtml(hs.cdiError)}</p>`
-    : hs.cdiPct !== null
-    ? `<p class="small muted" style="margin-top:8px">CDI en el mismo período: <span class="up"><b>${fmtPct(hs.cdiPct)}</b></span> ${
-        totalReturnPct > hs.cdiPct ? "— le vas ganando 🎯" : "— el CDI te va ganando"
+  const cdiEntry = hs.cdiCache[hs.periodFilter];
+  const cdiPct = cdiEntry?.pct ?? null;
+  const cdiError = cdiEntry?.error ?? null;
+  const cdiLabel = hs.cdiStatus === "loading" ? "Actualizando…" : "Actualizar CDI";
+  const cdiResultHtml = cdiError
+    ? `<p class="small down" style="margin-top:8px">${escapeHtml(cdiError)}</p>`
+    : cdiPct !== null
+    ? `<p class="small muted" style="margin-top:8px">CDI en el mismo período: <span class="up"><b>${fmtPct(cdiPct)}</b></span> ${
+        totalReturnPct > cdiPct ? "— le vas ganando 🎯" : "— el CDI te va ganando"
       }</p>`
     : "";
 
@@ -2629,13 +2660,9 @@ function renderHistorico() {
 
   const totalReturnHtml = periodFiltered.length
     ? `<div class="card total-return-card">
-        <span class="muted small">Rendimiento total desde ${firstDate}</span>
+        <h2 class="card-title">Rendimiento total desde ${firstDate}</h2>
         <span class="total-return-value ${cum >= 0 ? "up" : "down"}">${cum >= 0 ? "+" : ""}${fmtBRL(cum)} (${fmtPct(totalReturnPct)})</span>
         <p class="muted small" style="margin-top:2px">Responde: "¿cómo le fue a mi plata desde que empecé a invertir?". Encadena la variación de cada día (precio + cambio + dividendos cobrados ese día) con el método TWR (retorno ponderado en el tiempo), así no se distorsiona si metiste o sacaste plata en el medio. A diferencia de "Ganancia/pérdida no realizada" (en Posiciones, que solo mira el precio de lo que tenés HOY), acá también se cuenta la ganancia o pérdida de las acciones que ya vendiste en el camino, y los dividendos cobrados.</p>
-        <div class="toolbar-row" style="justify-content:flex-start;margin-top:8px">
-          <button class="btn btn-ghost btn-sm" data-action="compare-spx" ${hs.spxStatus === "loading" ? "disabled" : ""}>${icon("refresh", 13, hs.spxStatus === "loading" ? "spin" : "")} ${spxLabel}</button>
-          <button class="btn btn-ghost btn-sm" data-action="compare-cdi" ${hs.cdiStatus === "loading" ? "disabled" : ""}>${icon("refresh", 13, hs.cdiStatus === "loading" ? "spin" : "")} ${cdiLabel}</button>
-        </div>
         ${spxResultHtml}
         ${cdiResultHtml}
       </div>`
@@ -2711,8 +2738,6 @@ function renderHistorico() {
         </div>
       </div>
       <div class="toolbar-row">
-        <button class="btn btn-ghost btn-sm" data-action="add-demo">${icon("sparkles", 13)} Generar más datos de prueba</button>
-        <button class="btn btn-ghost btn-sm" data-action="export-csv">${icon("download", 13)} Exportar CSV</button>
         <button class="btn btn-ghost btn-sm" data-action="clear-history">${icon("trash", 13)} ${hs.confirmClear ? "¿Confirmar borrado?" : "Borrar historial"}</button>
       </div>
       ${totalReturnHtml}
@@ -3727,7 +3752,7 @@ function switchTab(tab) {
   else if (tab === "posicoes") resetPosicoesState();
   else if (tab === "historico") {
     resetHistoricoState();
-    loadFullHistoryFromCloud(); // carga el historial completo desde Supabase en segundo plano
+    loadFullHistoryFromCloud().then(() => autoLoadBenchmarks()); // carga el historial completo y luego las comparaciones
   }
   render();
 }
@@ -3799,6 +3824,7 @@ function syncHojeOnTabEnter() {
     return; // hay una vista previa sin guardar: no la pisamos
   }
   resetHojeState();
+  if (isMarketOpen() && state.hoje.status === "idle") fetchLiveDayChange();
 }
 
 function render() {
@@ -3876,9 +3902,7 @@ function handleAction(action, el) {
   const id = el.dataset.id;
   switch (action) {
     case "switch-tab": switchTab(el.dataset.tab); break;
-    case "start-manual": startManual(); break;
     case "fetch-live-day-change": fetchLiveDayChange(); break;
-    case "parse-pasted": parsePasted(); break;
     case "edit-review": state.hoje.status = "review"; render(); break;
     case "cancel-review": resetHojeState(); render(); break;
     case "compute": compute(); break;
@@ -3933,32 +3957,8 @@ function handleAction(action, el) {
     case "toggle-monthly-expanded": state.historico.monthlyExpanded = !state.historico.monthlyExpanded; render(); break;
     case "set-period": {
       state.historico.periodFilter = el.dataset.period;
-      const hs = state.historico;
-      const period = hs.periodFilter;
-      const currentYear = new Date().getFullYear();
-      // Un año ya finalizado (ej. "2023") es un período FIJO que no cambia con el tiempo, a
-      // diferencia de "Este año" o "Todo" — así que su comparación contra S&P 500/CDI se puede
-      // guardar en caché y mostrar de una sola vez, sin depender de tocar el botón cada vez.
-      const isFinishedPastYear = /^\d{4}$/.test(period) && Number(period) < currentYear;
-      if (isFinishedPastYear && hs.spxCache[period]) {
-        hs.spxPct = hs.spxCache[period].pct;
-        hs.spxError = hs.spxCache[period].error;
-      } else {
-        hs.spxPct = null;
-        hs.spxError = null;
-      }
-      if (isFinishedPastYear && hs.cdiCache[period]) {
-        hs.cdiPct = hs.cdiCache[period].pct;
-        hs.cdiError = hs.cdiCache[period].error;
-      } else {
-        hs.cdiPct = null;
-        hs.cdiError = null;
-      }
       render();
-      if (isFinishedPastYear) {
-        if (!hs.spxCache[period]) compareSpx();
-        if (!hs.cdiCache[period]) compareCdi();
-      }
+      autoLoadBenchmarks();
       break;
     }
     case "cancel-entry-edit": cancelEditEntry(); break;
@@ -4032,17 +4032,7 @@ root.addEventListener("input", (e) => {
     state.historico.importFromDate = el.value;
   } else if (bind === "importToDate") {
     state.historico.importToDate = el.value;
-  } else if (bind === "paste") {
-    state.hoje.pasteText = el.value;
-    const btn = document.querySelector('[data-action="parse-pasted"]');
-    if (btn) btn.disabled = !el.value.trim();
-    if (state.hoje.error) {
-      // clear stale error banner without a full re-render (keeps focus in the textarea)
-      state.hoje.error = null;
-      const banner = root.querySelector(".banner-warn");
-      if (banner) banner.remove();
-    }
-  } else if (bind === "apiKey") {
+  } else if (bind === "apiKey") {  } else if (bind === "apiKey") {
     state.posicoes.apiKey = el.value;
     persistQuotesCache();
   } else if (bind === "finnhubKey") {
@@ -4193,14 +4183,14 @@ function startAutoSaveWatcher() {
   setInterval(maybeAutoSaveToday, 60000);
 }
 
-// Auto-refresh de cotizaciones cada 30 minutos SOLO durante el horario de mercado de EE. UU.
+// Auto-refresh de cotizaciones cada 5 minutos SOLO durante el horario de mercado de EE. UU.
 // (9:30 - 16:00 ET, lunes a viernes). Fuera de ese horario no consume créditos de API.
 // Cada dispositivo con la app abierta corre su propio timer — con 2 dispositivos y 8 activos
 // el consumo es ~208 créditos/día (muy por debajo del límite de 800 del plan gratuito).
 const MARKET_OPEN_HOUR_ET = 9;   // 9:30 ET
 const MARKET_OPEN_MIN_ET = 30;
 const MARKET_CLOSE_HOUR_ET = 16; // 16:00 ET
-const AUTO_REFRESH_INTERVAL_MS = 30 * 60 * 1000; // 30 minutos
+const AUTO_REFRESH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutos
 
 function isMarketOpen() {
   if (isMarketClosedToday()) return false; // fin de semana o feriado
@@ -4224,6 +4214,8 @@ function isMarketOpen() {
 
 async function autoRefreshQuotes() {
   if (!isMarketOpen()) return; // fuera del horario, no hacer nada
+  const ae = document.activeElement;
+  if (ae && ae.matches && ae.matches("input, textarea, select")) return; // no re-renderizar mientras se escribe
   const finnhubKey = (state.posicoes?.finnhubKey || "").trim();
   if (!finnhubKey) return; // sin clave no hay precio que buscar
   // Si hay una edición manual en curso en la pestaña "Hoy", no interrumpir
@@ -4233,7 +4225,7 @@ async function autoRefreshQuotes() {
 }
 
 function startAutoRefresh() {
-  // El primer tick ocurre al abrir la app (si el mercado está abierto), luego cada 30 min.
+  // El primer tick ocurre al abrir la app (si el mercado está abierto), luego cada 5 min.
   autoRefreshQuotes();
   setInterval(autoRefreshQuotes, AUTO_REFRESH_INTERVAL_MS);
 }
@@ -4726,7 +4718,7 @@ resetHojeState();
 resetPosicoesState();
 resetHistoricoState();
 render();
-startAutoSaveWatcher();
+// startAutoSaveWatcher(); // desactivado: el cierre lo guarda Supabase (cierre-diario)
 // autoFillHistoryGaps() deshabilitado: con Supabase el historial completo vive en la nube.
 // Correrlo automáticamente al abrir causaba corrupción de la app al intentar guardar
 // 1500+ entradas en localStorage. El historial se actualiza manualmente con "Importar histórico real".
