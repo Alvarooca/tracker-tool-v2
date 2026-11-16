@@ -68,7 +68,7 @@ html, body { margin: 0; padding: 0; background: var(--bg-app); }
 
 .header { border-bottom: 1px solid var(--border); background: linear-gradient(180deg, var(--bg-header-grad) 0%, var(--bg-app) 100%); }
 .header-top { display: flex; justify-content: space-between; align-items: flex-end; padding: 20px 18px 14px; gap: 12px; flex-wrap: wrap; }
-.brand-eyebrow { font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.12em; color: var(--accent-gold); margin-bottom: 4px; }
+.brand-eyebrow { font-family: 'IBM Plex Mono', monospace; font-size: 11px; letter-spacing: 0.12em; color: var(--text-muted); margin-bottom: 4px; }
 .brand-title { font-family: 'Space Grotesk', sans-serif; font-size: 24px; font-weight: 700; margin: 0; letter-spacing: -0.01em; }
 .header-right { display: flex; align-items: center; gap: 12px; }
 .header-total { text-align: right; display: flex; flex-direction: column; }
@@ -102,9 +102,9 @@ html, body { margin: 0; padding: 0; background: var(--bg-app); }
 .tab-active { color: var(--text-primary); border-bottom: 2px solid var(--accent-gold); background: var(--bg-card); }
 
 .main { padding: 16px 14px 0; max-width: 720px; margin: 0 auto; }
-.stack { display: flex; flex-direction: column; gap: 14px; }
+.stack { display: flex; flex-direction: column; gap: 16px; }
 
-.card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+.card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 18px; }
 .card-title-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
 .card-title { font-family: 'Space Grotesk', sans-serif; font-size: 15px; font-weight: 600; margin: 0; }
 .card-head-value { font-family: 'IBM Plex Mono', monospace; font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -135,13 +135,13 @@ html, body { margin: 0; padding: 0; background: var(--bg-app); }
 .toolbar-row { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
 .period-pills { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; }
 .period-pill { flex-shrink: 0; background: transparent; border: 1px solid var(--border-input); color: var(--text-muted); font-size: 12px; font-family: 'Inter', sans-serif; font-weight: 500; padding: 6px 12px; border-radius: 20px; cursor: pointer; white-space: nowrap; }
-.period-pill.active { background: var(--accent-gold); color: var(--on-accent); border-color: var(--accent-gold); font-weight: 600; }
+.period-pill.active { background: var(--text-primary); color: var(--bg-app); border-color: var(--text-primary); font-weight: 600; }
 .btn-sm { padding: 6px 11px; font-size: 11.5px; }
 
 .table { min-width: 100%; border-collapse: collapse; font-size: 13px; }
 .table-scroll { overflow-x: auto; max-width: 100%; }
 .table th { text-align: left; color: var(--text-muted); font-weight: 500; font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; padding: 6px 6px; border-bottom: 1px solid var(--border); }
-.table td { padding: 9px 6px; border-bottom: 1px solid var(--bg-row-alt); font-family: 'IBM Plex Mono', monospace; }
+.table td { padding: 11px 8px; border-bottom: 1px solid var(--bg-row-alt); font-family: 'IBM Plex Mono', monospace; }
 .table td:first-child { font-family: 'Inter', sans-serif; }
 .table .num { text-align: right; }
 .row-fx td { background: var(--bg-header-grad); }
@@ -174,6 +174,12 @@ html, body { margin: 0; padding: 0; background: var(--bg-app); }
 .skeleton-line { height: 12px; border-radius: 6px; background: linear-gradient(90deg, var(--border) 25%, var(--border-input) 50%, var(--border) 75%); background-size: 200% 100%; animation: skeleton-shimmer 1.2s ease-in-out infinite; }
 @keyframes skeleton-shimmer { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
 @media (prefers-reduced-motion: reduce) { .skeleton-line { animation: none; } }
+.chart-svg .chart-last-label { fill: var(--text-primary); font-family: 'IBM Plex Mono', monospace; font-size: 11px; font-weight: 600; }
+@media (max-width: 600px) {
+  .card { padding: 14px; }
+  .table td { padding: 10px 6px; }
+  .asset-row { padding: 10px 0; }
+}
 .total-return-card { display: flex; flex-direction: column; gap: 4px; padding: 14px 16px; }
 .total-return-value { font-family: 'Space Grotesk', sans-serif; font-size: 20px; font-weight: 700; }
 .breakdown-subtitle { margin: 14px 0 8px; }
@@ -516,7 +522,7 @@ function icon(name, size = 15, cls = "") {
 /*  fallback while loading, on error, or for non-stock symbols like fx)   */
 /* ---------------------------------------------------------------------- */
 
-const AVATAR_PALETTE = ["#E8B339", "#1FD8A4", "#5B8DEF", "#E8638C", "#A78BFA", "#F2994A", "#4FC3D9", "#9CCC65"];
+const AVATAR_PALETTE = ["#8C7A4F", "#5F8F7E", "#5C7089", "#8A6A7E", "#6E6A8C", "#8A7F5C", "#4F7F8C", "#7A8F5C"];
 
 function avatarColor(ticker) {
   let hash = 0;
@@ -1406,7 +1412,7 @@ function smoothPathD(points) {
 
 let chartIdCounter = 0;
 
-function buildChart({ type, data, valueKey, labelKey, height = 180, maxLabels = 6 }) {
+function buildChart({ type, data, valueKey, labelKey, height = 180, maxLabels = 6, formatLast = fmtK, formatTooltip = null }) {
   const W = 340, H = height;
   const padT = 14, padB = 24;
   const values = data.map((d) => d[valueKey]);
@@ -1478,8 +1484,14 @@ function buildChart({ type, data, valueKey, labelKey, height = 180, maxLabels = 
       const isLast = i === data.length - 1;
       const r = isLast ? 3.6 : 2.1;
       if (isLast) body += `<circle cx="${points[i].x.toFixed(2)}" cy="${points[i].y.toFixed(2)}" r="${r + 2}" class="chart-dot-ring chart-fade-in"/>`;
-      body += `<circle cx="${points[i].x.toFixed(2)}" cy="${points[i].y.toFixed(2)}" r="${r}" class="chart-dot-${colorClass} chart-fade-in"><title>${escapeHtml(String(d[labelKey]))}: ${fmtTooltip(d[valueKey])}</title></circle>`;
+      const tip = formatTooltip ? formatTooltip(d[valueKey]) : fmtTooltip(d[valueKey]);
+      body += `<circle cx="${points[i].x.toFixed(2)}" cy="${points[i].y.toFixed(2)}" r="${r}" class="chart-dot-${colorClass} chart-fade-in"><title>${escapeHtml(String(d[labelKey]))}: ${escapeHtml(tip)}</title></circle>`;
     });
+    // Etiqueta del último valor, encima del último punto y sin salirse del área del gráfico
+    const lastP = points[points.length - 1];
+    const labelX = Math.min(lastP.x, W - padR);
+    const labelY = Math.max(padT + 10, lastP.y - 9);
+    body += `<text class="chart-last-label" x="${labelX.toFixed(2)}" y="${labelY.toFixed(2)}" text-anchor="end">${escapeHtml(formatLast(data[data.length - 1][valueKey]))}</text>`;
   } else if (type === "bar") {
     const bw = Math.min(18, (innerW / data.length) * 0.6);
     data.forEach((d, i) => {
@@ -3025,9 +3037,9 @@ function renderHistorico() {
     });
   }
 
-  const lineSvg = buildChart({ type: "line", data: chartData, valueKey: "cumulative", labelKey: "date", height: 200, maxLabels: chartMaxLabels });
+  const lineSvg = buildChart({ type: "line", data: chartData, valueKey: "cumulative", labelKey: "date", height: 200, maxLabels: chartMaxLabels, formatLast: fmtK, formatTooltip: fmtBRL });
   const barSvg = buildChart({ type: "bar", data: chartData, valueKey: "total", labelKey: "date", height: 160, maxLabels: chartMaxLabels });
-  const twrSvg = buildChart({ type: "line", data: chartData, valueKey: "cumTwrPct", labelKey: "date", height: 180, maxLabels: chartMaxLabels });
+  const twrSvg = buildChart({ type: "line", data: chartData, valueKey: "cumTwrPct", labelKey: "date", height: 180, maxLabels: chartMaxLabels, formatLast: (v) => fmtPct(v), formatTooltip: (v) => fmtPct(v) });
 
   const totalReturnPct = (twrFactor - 1) * 100;
   const firstDate = periodFiltered.length ? fmtFullDate(periodFiltered[0].date) : "";
