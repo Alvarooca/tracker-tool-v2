@@ -25,9 +25,9 @@
   --border-input: #232932;
   --text-primary: #ECEFF2;
   --text-secondary: #C7CCD3;
-  --text-muted: #7A8290;
+  --text-muted: #8A93A1;
   --text-muted2: #ABB2BC;
-  --text-dim: #4A5360;
+  --text-dim: #6E7889;
   --accent-gold: #E8B339;
   --up: #1FD8A4;
   --down: #FF6B6B;
@@ -46,7 +46,7 @@
   --text-secondary: #3A4250;
   --text-muted: #6B7280;
   --text-muted2: #4B5563;
-  --text-dim: #9AA1AC;
+  --text-dim: #7A808C;
   --accent-gold: #9A6B00;
   --up: #0F9D78;
   --down: #D92D2D;
@@ -167,6 +167,11 @@ html, body { margin: 0; padding: 0; background: var(--bg-app); }
 .error-list li:last-child { margin-bottom: 0; }
 
 .empty-state { text-align: center; color: var(--text-muted); padding: 30px 16px; }
+.empty-state > p:first-child { color: var(--text-secondary); font-size: 14px; font-weight: 600; margin: 0 0 6px; }
+.empty-state .small { line-height: 1.5; max-width: 420px; margin: 0 auto; }
+.skeleton-line { height: 12px; border-radius: 6px; background: linear-gradient(90deg, var(--border) 25%, var(--border-input) 50%, var(--border) 75%); background-size: 200% 100%; animation: skeleton-shimmer 1.2s ease-in-out infinite; }
+@keyframes skeleton-shimmer { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
+@media (prefers-reduced-motion: reduce) { .skeleton-line { animation: none; } }
 .total-return-card { display: flex; flex-direction: column; gap: 4px; padding: 14px 16px; }
 .total-return-value { font-family: 'Space Grotesk', sans-serif; font-size: 20px; font-weight: 700; }
 .breakdown-subtitle { margin: 14px 0 8px; }
@@ -2644,7 +2649,17 @@ function dividendsByYear() {
 
 // Desglose del rendimiento del período en R$: precio de las acciones, efecto dólar y dividendos.
 // La suma de las tres partes coincide con el "Rendimiento total" en R$ de este mismo período.
+function skeletonCardHtml(title) {
+  return `<div class="card" aria-busy="true">
+    <h2 class="card-title">${title}</h2>
+    <div class="skeleton-line" style="width:90%"></div>
+    <div class="skeleton-line" style="width:70%;margin-top:10px"></div>
+    <div class="skeleton-line" style="width:100%;margin-top:14px;height:72px"></div>
+  </div>`;
+}
+
 function renderReturnBreakdown(periodFiltered) {
+  if (fullHistoryPending) return skeletonCardHtml("Desglose del rendimiento");
   if (!periodFiltered.length) return "";
   const tax = parseNum(state.posicoes.dividendTaxPct) || 0;
   const fxFallback = parseNum(state.posicoes.fxRateInput);
@@ -3844,20 +3859,22 @@ function switchTab(tab) {
 // totales. Sin `rows`, cada entrada pesa ~100 bytes en vez de ~2KB, haciendo que 1286 días
 // quepan en memoria sin problemas y sin saturar el localStorage ni trabar "Hoy".
 let fullHistoryLoaded = false;
+let fullHistoryPending = false; // true mientras se descarga el detalle por activo
 async function loadFullHistoryFromCloud() {
   if (fullHistoryLoaded && state.history.length > 90) return;
   try {
     if (!state.historico) resetHistoricoState();
     state.historico.importStatus = "loading";
     state.historico.importProgressLabel = "Cargando historial…";
+    fullHistoryPending = true;
     render();
 
-    // Cargar sin el campo `rows` pero CON `total_saldo` (necesario para el TWR)
+    // Carga completa: incluye `rows` (detalle por activo, necesario para el desglose) y `total_saldo` (TWR)
     // Los bloques de 500 evitan el límite de 1000 filas de Supabase
     const [block1, block2, block3] = await Promise.all([
-      sbRequest("GET", "history", null, `?user_id=eq.${SB_USER}&select=id,date,price_total,fx_pct,fx_gain,total,total_saldo&order=date.asc&offset=0&limit=500`),
-      sbRequest("GET", "history", null, `?user_id=eq.${SB_USER}&select=id,date,price_total,fx_pct,fx_gain,total,total_saldo&order=date.asc&offset=500&limit=500`),
-      sbRequest("GET", "history", null, `?user_id=eq.${SB_USER}&select=id,date,price_total,fx_pct,fx_gain,total,total_saldo&order=date.asc&offset=1000&limit=500`),
+      sbRequest("GET", "history", null, `?user_id=eq.${SB_USER}&select=id,date,price_total,fx_pct,fx_gain,total,total_saldo,rows&order=date.asc&offset=0&limit=500`),
+      sbRequest("GET", "history", null, `?user_id=eq.${SB_USER}&select=id,date,price_total,fx_pct,fx_gain,total,total_saldo,rows&order=date.asc&offset=500&limit=500`),
+      sbRequest("GET", "history", null, `?user_id=eq.${SB_USER}&select=id,date,price_total,fx_pct,fx_gain,total,total_saldo,rows&order=date.asc&offset=1000&limit=500`),
     ]);
 
     const all = [...(block1 || []), ...(block2 || []), ...(block3 || [])];
@@ -3877,15 +3894,17 @@ async function loadFullHistoryFromCloud() {
       id: r.id, date: r.date,
       priceTotal: r.price_total, fxPct: r.fx_pct, fxGain: r.fx_gain, total: r.total,
       totalSaldo: Number(r.total_saldo) || 0,
-      rows: localById[r.id]?.rows || [],
+      rows: localById[r.id]?.rows?.length ? localById[r.id].rows : (Array.isArray(r.rows) ? r.rows : []),
     })).sort((a, b) => new Date(a.date) - new Date(b.date));
 
     fullHistoryLoaded = true;
+    fullHistoryPending = false;
     state.historico.importStatus = "idle";
     state.historico.importProgressLabel = null;
     render();
   } catch (e) {
     console.warn("[supabase] Error al cargar historial completo:", e);
+    fullHistoryPending = false;
     state.historico.importStatus = "idle";
     state.historico.importProgressLabel = null;
     render();
@@ -3975,10 +3994,34 @@ function render() {
       </main>
     </div>`;
 
+  // Animación suave del saldo cuando cambia (no se anima en la primera carga ni con reducción de movimiento)
+  {
+    const headerKey = isUsd ? "usd" : "brl";
+    const headerEnd = isUsd ? totalUsd : totalSaldo;
+    const prevHeader = window.__headerPrev ? window.__headerPrev[headerKey] : undefined;
+    if (prevHeader !== undefined && Math.abs(prevHeader - headerEnd) > 0.005) {
+      animateHeaderValue(document.getElementById("header-total-value"), prevHeader, headerEnd, isUsd ? fmtUSD : fmtBRL);
+    }
+    window.__headerPrev = { ...(window.__headerPrev || {}), [headerKey]: headerEnd };
+  }
+
   if (deferredInstallPrompt) {
     const btn = document.getElementById("install-btn");
     if (btn) btn.hidden = false;
   }
+}
+
+function animateHeaderValue(el, from, to, fmt) {
+  if (!el || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const start = performance.now();
+  const dur = 600;
+  const step = (now) => {
+    const t = Math.min(1, (now - start) / dur);
+    const eased = 1 - Math.pow(1 - t, 3);
+    el.textContent = fmt(from + (to - from) * eased);
+    if (t < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
 }
 
 function handleAction(action, el) {
