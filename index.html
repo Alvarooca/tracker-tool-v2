@@ -107,6 +107,8 @@ html, body { margin: 0; padding: 0; background: var(--bg-app); }
 .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
 .card-title-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
 .card-title { font-family: 'Space Grotesk', sans-serif; font-size: 15px; font-weight: 600; margin: 0; }
+.card-head-value { font-family: 'IBM Plex Mono', monospace; font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.num { font-family: 'IBM Plex Mono', monospace; font-variant-numeric: tabular-nums; }
 
 .upload-card, .center-card { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 10px; padding: 30px 16px; }
 .upload-text { color: var(--text-muted2); font-size: 13px; max-width: 340px; line-height: 1.5; }
@@ -1583,7 +1585,10 @@ function renderAssetList(title) {
     <span>Activo</span><span>Últimos 30 días</span><span class="num">Valor (R$)</span><span class="num">Último cierre</span><span class="num">Peso</span>
   </div>`;
   return `<div class="card">
-    <h2 class="card-title">${title}</h2>
+    <div class="card-title-row">
+      <h2 class="card-title">${title}</h2>
+      <span class="card-head-value">${fmtBRL(total)}</span>
+    </div>
     <p class="note">Cada línea muestra la tendencia de los últimos 30 días, el valor actual, la variación del último cierre y el peso del activo en tu cartera.</p>
     ${headHtml}
     ${rowsHtml}
@@ -2720,7 +2725,10 @@ function renderReturnBreakdown(periodFiltered, periodFilter) {
       <td class="num ${cls(r.total)}"><b>${fmtBRL(r.total)}</b></td>
     </tr>`).join("");
   return `<div class="card">
-    <h2 class="card-title">Desglose del rendimiento</h2>
+    <div class="card-title-row">
+      <h2 class="card-title">Desglose del rendimiento</h2>
+      <span class="card-head-value ${cls(totalAll)}">${fmtBRL(totalAll)}</span>
+    </div>
     <p class="note">Suma en reales del período, separada por origen. Precio: variación diaria de cada posición. Dólar: efecto del cambio USD/BRL sobre la cartera, repartido entre activos según su peso ese día. Dividendos: netos de retención, al cambio de cada cobro. Las tres partes suman el "Rendimiento total" en R$ de arriba (el % es otro cálculo, TWR).</p>
     <div class="summary-line"><span>Precio de las acciones</span><span class="${cls(pricePeriod)}">${fmtBRL(pricePeriod)}</span></div>
     <div class="summary-line"><span>Efecto dólar (USD/BRL)</span><span class="${cls(fxPeriod)}">${fmtBRL(fxPeriod)}</span></div>
