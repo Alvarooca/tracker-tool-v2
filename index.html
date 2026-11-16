@@ -250,6 +250,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .spark { vertical-align: middle; margin-left: 6px; flex-shrink: 0; }
 .asset-row { display: grid; grid-template-columns: minmax(90px, 1.2fr) auto minmax(80px, 1fr) 64px 48px; gap: 8px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border); }
 .asset-row:last-child { border-bottom: none; }
+.asset-head { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--border); }
+.asset-head .num { text-align: right; }
 .asset-row .chart-svg { margin: 0; }
 .pos-cards { display: none; }
 .pos-card { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
@@ -1563,9 +1565,13 @@ function renderAssetList(title) {
       </div>`;
     })
     .join("");
+  const headHtml = `<div class="asset-row asset-head">
+    <span>Activo</span><span>Últimos 30 días</span><span class="num">Valor (R$)</span><span class="num">Último cierre</span><span class="num">Peso</span>
+  </div>`;
   return `<div class="card">
     <h2 class="card-title">${title}</h2>
-    <p class="note">Mini gráfico: últimos 30 días. % = variación del último cierre.</p>
+    <p class="note">Cada línea muestra la tendencia de los últimos 30 días, el valor actual, la variación del último cierre y el peso del activo en tu cartera.</p>
+    ${headHtml}
     ${rowsHtml}
   </div>`;
 }
@@ -1597,7 +1603,7 @@ function renderInicio() {
     ? [...dayEntry.rows].sort((a, b) => Math.abs(b.changePct) - Math.abs(a.changePct)).slice(0, 3)
     : [];
   const moversHtml = movers.length
-    ? `<div class="movers">${movers.map((r) => `<span class="mover">${avatarHtml(r.ticker, state.posicoes?.logos?.[r.ticker], 18)}<b>${escapeHtml(r.ticker)}</b><span class="${r.changePct >= 0 ? "up" : "down"}">${fmtPct(r.changePct)}</span></span>`).join("")}${dayEntry ? `<span class="mover"><b>USD/BRL</b><span class="${dayEntry.fxPct >= 0 ? "up" : "down"}">${fmtPct(dayEntry.fxPct)}</span></span>` : ""}</div>`
+    ? `<div class="movers"><span class="stat-label" style="flex-basis:100%">Mayores movimientos del último cierre</span>${movers.map((r) => `<span class="mover">${avatarHtml(r.ticker, state.posicoes?.logos?.[r.ticker], 18)}<b>${escapeHtml(r.ticker)}</b><span class="${r.changePct >= 0 ? "up" : "down"}">${fmtPct(r.changePct)}</span></span>`).join("")}${dayEntry ? `<span class="mover"><b>USD/BRL</b><span class="${dayEntry.fxPct >= 0 ? "up" : "down"}">${fmtPct(dayEntry.fxPct)}</span></span>` : ""}</div>`
     : "";
 
   return `<div class="stack">
@@ -2326,7 +2332,7 @@ function renderPosicoes() {
             <button class="icon-btn move-btn" data-action="move-row-down" data-id="${r.id}" title="Bajar" ${i === rows.length - 1 ? "disabled" : ""}>${icon("chevron-down", 14)}</button>
           </div>
         </td>
-        <td><div class="ticker-cell">${avatarHtml(r.ticker, p.logos?.[r.ticker], 22)}<input class="input-cell" data-bind="ticker" data-id="${r.id}" value="${escapeAttr(r.ticker)}" placeholder="PG">${tickerSparkline(r.ticker)}</div></td>
+        <td><div class="ticker-cell">${avatarHtml(r.ticker, p.logos?.[r.ticker], 22)}<input class="input-cell" data-bind="ticker" data-id="${r.id}" value="${escapeAttr(r.ticker)}" placeholder="PG"></div></td>
         <td><input class="input-cell" data-bind="broker" data-id="${r.id}" value="${escapeAttr(r.broker)}" placeholder="Nomad"></td>
         <td class="num"><input class="input-cell" inputmode="decimal" data-bind="quantity" data-id="${r.id}" value="${escapeAttr(r.quantity)}"></td>
         <td class="num"><input class="input-cell" inputmode="decimal" data-bind="price" data-id="${r.id}" value="${escapeAttr(r.price)}" placeholder="0,00"></td>
@@ -2345,7 +2351,7 @@ function renderPosicoes() {
           : `<input class="input-cell" inputmode="decimal" data-bind="saldo" data-id="${r.id}" value="${escapeAttr(r.saldo)}" style="max-width:140px">`;
       return `<div class="pos-card">
         <div class="pos-card-top">
-          <div class="ticker-cell">${avatarHtml(r.ticker, p.logos?.[r.ticker], 22)}<input class="input-cell" data-bind="ticker" data-id="${r.id}" value="${escapeAttr(r.ticker)}" placeholder="PG" style="text-align:left">${tickerSparkline(r.ticker)}</div>
+          <div class="ticker-cell">${avatarHtml(r.ticker, p.logos?.[r.ticker], 22)}<input class="input-cell" data-bind="ticker" data-id="${r.id}" value="${escapeAttr(r.ticker)}" placeholder="PG" style="text-align:left"></div>
           <button class="icon-btn" data-action="move-row-up" data-id="${r.id}" title="Subir" ${i === 0 ? "disabled" : ""}>${icon("chevron-up", 14)}</button>
           <button class="icon-btn" data-action="move-row-down" data-id="${r.id}" title="Bajar" ${i === rows.length - 1 ? "disabled" : ""}>${icon("chevron-down", 14)}</button>
           <button class="icon-btn" data-action="remove-row" data-id="${r.id}" title="Eliminar">${icon("trash", 14)}</button>
@@ -3037,7 +3043,6 @@ function renderHistorico() {
       </div>
       ${totalReturnHtml}
       ${taxSummaryHtml}
-      ${renderAssetList("Rendimiento por activo")}
       <div class="card">
         <div class="card-title-row">
           <h2 class="card-title">Rendimiento acumulado (%)</h2>
