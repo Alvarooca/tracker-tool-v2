@@ -2618,7 +2618,7 @@ function computeRealizedSales() {
     const avgBrl = g.costBrl / g.qty;
     const realizedUsd = t.qty * (t.price - avgUsd);
     const realizedBrl = txFx && !g.missingFx ? t.qty * t.price * txFx - t.qty * avgBrl : null;
-    sales.push({ id: t.id, date: t.date, ticker: t.ticker, broker: t.broker || "", qty: t.qty, price: t.price, avgUsd, realizedUsd, realizedBrl });
+    sales.push({ id: t.id, date: t.date, ticker: t.ticker, broker: t.broker || "", qty: t.qty, price: t.price, avgUsd, realizedUsd, realizedBrl, fx: txFx });
     g.costUsd -= avgUsd * t.qty;
     g.costBrl -= avgBrl * t.qty;
     g.qty -= t.qty;
@@ -2640,6 +2640,112 @@ function dividendsByYear() {
     else d.missingFx++;
   });
   return out;
+}
+
+// Desglose del rendimiento del período en R$: precio de las acciones, efecto dólar y dividendos.
+// La suma de las tres partes coincide con el "Rendimiento total" en R$ de este mismo período.
+function renderReturnBreakdown(periodFiltered) {
+  if (!periodFiltered.length) return "";
+  const tax = parseNum(state.posicoes.dividendTaxPct) || 0;
+  const fxFallback = parseNum(state.posicoes.fxRateInput);
+  const firstDay = dateToBrazilYMD(periodFiltered[0].date);
+  const lastDay = dateToBrazilYMD(periodFiltered[periodFiltered.length - 1].date);
+  const byTicker = {};
+  const bucket = (t) => (byTicker[t] = byTicker[t] || { price: 0, fx: 0, div: 0 });
+  let pricePeriod = 0, fxPeriod = 0, divPeriod = 0, allocatedPrice = 0, allocatedFx = 0;
+  periodFiltered.forEach((e) => {
+    const rows = Array.isArray(e.rows) ? e.rows : [];
+    const sumSaldo = rows.reduce((s, r) => s + (Number(r.saldo) || 0), 0);
+    const entryPrice = typeof e.priceTotal === "number"
+      ? e.priceTotal
+      : rows.reduce((s, r) => s + ((Number(r.saldo) || 0) * (Number(r.changePct) || 0)) / 100, 0);
+    const entryFx = Number(e.fxGain) || 0;
+    pricePeriod += entryPrice;
+    fxPeriod += entryFx;
+    // El efecto dólar del día se reparte entre los activos según su peso ese día
+    rows.forEach((r) => {
+      const saldo = Number(r.saldo) || 0;
+      const p = (saldo * (Number(r.changePct) || 0)) / 100;
+      bucket(r.ticker).price += p;
+      allocatedPrice += p;
+      if (sumSaldo > 0) {
+        const f = (entryFx * saldo) / sumSaldo;
+        bucket(r.ticker).fx += f;
+        allocatedFx += f;
+      }
+    });
+  });
+  state.transactions.forEach((t) => {
+    if (t.type !== "dividend") return;
+    const day = dateToBrazilYMD(t.date);
+    if (day < firstDay || day > lastDay) return;
+    const fx = typeof t.fx === "number" && t.fx > 0 ? t.fx : fxFallback;
+    if (!fx) return;
+    const brl = t.qty * t.price * (1 - tax / 100) * fx;
+    bucket(t.ticker).div += brl;
+    divPeriod += brl;
+  });
+  const list = Object.entries(byTicker).map(([ticker, v]) => ({ ticker, ...v, total: v.price + v.fx + v.div }));
+  const unPrice = pricePeriod - allocatedPrice;
+  const unFx = fxPeriod - allocatedFx;
+  if (Math.abs(unPrice) > 0.005 || Math.abs(unFx) > 0.005) {
+    list.push({ ticker: "Sin detalle por activo", price: unPrice, fx: unFx, div: 0, total: unPrice + unFx });
+  }
+  list.sort((a, b) => b.total - a.total);
+  const totalAll = pricePeriod + fxPeriod + divPeriod;
+  const cls = (v) => (v >= 0 ? "up" : "down");
+  const rowsHtml = list.map((r) => `<tr>
+      <td><b>${escapeHtml(r.ticker)}</b></td>
+      <td class="num ${cls(r.price)}">${fmtBRL(r.price)}</td>
+      <td class="num ${cls(r.fx)}">${fmtBRL(r.fx)}</td>
+      <td class="num ${cls(r.div)}">${fmtBRL(r.div)}</td>
+      <td class="num ${cls(r.total)}"><b>${fmtBRL(r.total)}</b></td>
+    </tr>`).join("");
+  return `<div class="card">
+    <h2 class="card-title">Desglose del rendimiento</h2>
+    <p class="note">Suma en reales del período, separada por origen. Precio: variación diaria de cada posición. Dólar: efecto del cambio USD/BRL sobre la cartera, repartido entre activos según su peso ese día. Dividendos: netos de retención, al cambio de cada cobro. Las tres partes suman el "Rendimiento total" en R$ de arriba (el % es otro cálculo, TWR).</p>
+    <div class="summary-line"><span>Precio de las acciones</span><span class="${cls(pricePeriod)}">${fmtBRL(pricePeriod)}</span></div>
+    <div class="summary-line"><span>Efecto dólar (USD/BRL)</span><span class="${cls(fxPeriod)}">${fmtBRL(fxPeriod)}</span></div>
+    <div class="summary-line"><span>Dividendos netos</span><span class="${cls(divPeriod)}">${fmtBRL(divPeriod)}</span></div>
+    <div class="summary-line"><span><b>Total del período</b></span><span class="${cls(totalAll)}"><b>${fmtBRL(totalAll)}</b></span></div>
+    <div class="table-scroll" style="margin-top:10px"><table class="table">
+      <thead><tr><th>Activo</th><th class="num">Precio</th><th class="num">Dólar</th><th class="num">Dividendos</th><th class="num">Total</th></tr></thead>
+      <tbody>${rowsHtml}</tbody>
+    </table></div>
+  </div>`;
+}
+
+// Informe CSV de un año cerrado: ventas (con costo promedio y cambio) y dividendos netos.
+// Separador ";" y decimal "," para que Excel en español/portugués lo abra directo.
+function buildTaxReportCsv(year) {
+  const tax = parseNum(state.posicoes.dividendTaxPct) || 0;
+  const num = (v) => (v === null || v === undefined || v === "" || !Number.isFinite(Number(v)) ? "" : Number(v).toFixed(2).replace(".", ","));
+  const dmy = (ymd) => { const [y, m, d] = ymd.split("-"); return `${d}/${m}/${y}`; };
+  const esc = (v) => { const str = String(v ?? ""); return /[;"\n\r]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str; };
+  const header = ["Tipo", "Fecha", "Ticker", "Corretora", "Cantidad", "Precio US$", "Costo promedio US$", "Ganancia US$", "Cambio USD/BRL", "Ganancia R$", "Dividendo neto US$", "Dividendo neto R$"];
+  const items = [];
+  computeRealizedSales()
+    .filter((s) => dateToBrazilYMD(s.date).slice(0, 4) === String(year))
+    .forEach((s) => {
+      const day = dateToBrazilYMD(s.date);
+      items.push({ day, cols: ["Venta", dmy(day), s.ticker, s.broker, num(s.qty), num(s.price), num(s.avgUsd), num(s.realizedUsd), num(s.fx), num(s.realizedBrl), "", ""] });
+    });
+  state.transactions
+    .filter((t) => t.type === "dividend" && dateToBrazilYMD(t.date).slice(0, 4) === String(year))
+    .forEach((t) => {
+      const day = dateToBrazilYMD(t.date);
+      const fx = typeof t.fx === "number" && t.fx > 0 ? t.fx : null;
+      const net = t.qty * t.price * (1 - tax / 100);
+      items.push({ day, cols: ["Dividendo", dmy(day), t.ticker, t.broker || "", num(t.qty), num(t.price), "", "", num(fx), "", num(net), fx ? num(net * fx) : ""] });
+    });
+  items.sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0));
+  return "﻿" + [header, ...items.map((i) => i.cols)].map((r) => r.map(esc).join(";")).join("\r\n");
+}
+
+function downloadTaxReport(year) {
+  const y = Number(year);
+  if (!(y < new Date().getFullYear())) return; // solo años cerrados
+  downloadBlob(buildTaxReportCsv(String(y)), `informe-ventas-dividendos-${y}.csv`, "text/csv;charset=utf-8");
 }
 
 function renderTaxSummary() {
@@ -2674,7 +2780,7 @@ function renderTaxSummary() {
         <td class="num ${usd >= 0 ? "up" : "down"}">US$ ${usd.toFixed(2)}</td>
         <td class="num ${brl >= 0 ? "up" : "down"}">${fmtBRL(brl)}</td>
         <td class="num small">${fmtBRL(d.brl)}</td>
-        <td><button class="btn btn-ghost btn-sm" data-action="toggle-tax-detail" data-year="${y}">${open ? "Ocultar" : "Detalle"}</button></td>
+        <td class="row-actions">${Number(y) < new Date().getFullYear() ? `<button class="btn btn-ghost btn-sm" data-action="download-tax-report" data-year="${y}">${icon("download", 13)} Informe CSV</button>` : ""}<button class="btn btn-ghost btn-sm" data-action="toggle-tax-detail" data-year="${y}">${open ? "Ocultar" : "Detalle"}</button></td>
       </tr>${detail}`;
   }).join("");
 
@@ -3051,6 +3157,7 @@ function renderHistorico() {
         <button class="btn btn-ghost btn-sm" data-action="clear-history">${icon("trash", 13)} ${hs.confirmClear ? "¿Confirmar borrado?" : "Borrar historial"}</button>
       </div>
       ${totalReturnHtml}
+      ${renderReturnBreakdown(periodFiltered)}
       ${taxSummaryHtml}
       <div class="card">
         <div class="card-title-row">
@@ -3934,6 +4041,7 @@ function handleAction(action, el) {
       autoLoadBenchmarks();
       break;
     }
+    case "download-tax-report": downloadTaxReport(el.dataset.year); break;
     case "toggle-tax-detail": state.historico.taxDetailYear = state.historico.taxDetailYear === el.dataset.year ? null : el.dataset.year; render(); break;
     case "cancel-entry-edit": cancelEditEntry(); break;
     case "save-entry-edit": saveEntryEdit(); break;
