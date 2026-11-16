@@ -240,6 +240,14 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
   outline-offset: 2px;
 }
 
+.stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 18px; margin-top: 10px; }
+.stat { display: flex; flex-direction: column; gap: 2px; }
+.stat-label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em; }
+.stat-value { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.stat-sub { font-size: 12px; opacity: .85; font-variant-numeric: tabular-nums; }
+.movers { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-top: 14px; }
+.mover { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; }
+.spark { vertical-align: middle; margin-left: 6px; flex-shrink: 0; }
 .pos-cards { display: none; }
 .pos-card { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
 .pos-card-top { display: flex; align-items: center; gap: 8px; }
@@ -456,6 +464,7 @@ const generateDemoEntries = (portfolio, days = 14) => {
 /* ---------------------------------------------------------------------- */
 
 const ICON_PATHS = {
+  home: '<path d="M3 11 12 3l9 8"/><path d="M5 10v10h5v-6h4v6h5V10"/>',
   wallet: '<path d="M3 7h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/><path d="M16 7V5a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v2"/><path d="M16 13h3"/>',
   refresh: '<path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/>',
   save: '<path d="M5 4h11l3 3v13H5z"/><path d="M8 4v6h8V4"/><path d="M8 20v-6h8v6"/>',
@@ -511,7 +520,7 @@ function avatarHtml(ticker, logoUrl, size = 22) {
 /* ---------------------------------------------------------------------- */
 
 const state = {
-  tab: "hoje",
+  tab: "inicio",
   portfolio: DEFAULT_PORTFOLIO.map((p) => ({ ...p })),
   history: [],
   transactions: [],
@@ -1182,8 +1191,6 @@ function resetHistoricoState() {
     confirmClear: false,
     confirmRemoveId: null,
     taxDetailYear: null,
-    cfForm: { type: "deposit", date: todayYMD(), amount: "", error: null },
-    cfExpanded: false,
     importStatus: "idle",
     importProgressLabel: null,
     importMessage: null,
@@ -1499,8 +1506,112 @@ function renderTickerTape(portfolio, lastEntry) {
 }
 
 /* ---------------------------------------------------------------------- */
+/*  Render: INICIO (portada)                                               */
+/* ---------------------------------------------------------------------- */
+
+// Rendimiento TWR de un conjunto de registros: encadena total ÷ saldo base de cada día.
+// Para mantener el mismo criterio que Historial, suma los dividendos netos cobrados.
+function twrPct(entries) {
+  if (!entries.length) return null;
+  const tax = parseNum(state.posicoes.dividendTaxPct) || 0;
+  const fxFallback = parseNum(state.posicoes.fxRateInput);
+  const start = new Date(entries[0].date).getTime() - 86400000;
+  const end = new Date(entries[entries.length - 1].date).getTime() + 86400000;
+  const divByDay = {};
+  state.transactions.filter((t) => t.type === "dividend").forEach((t) => {
+    const ts = new Date(t.date).getTime();
+    if (ts < start || ts > end) return;
+    const fx = typeof t.fx === "number" && t.fx > 0 ? t.fx : fxFallback;
+    if (!fx) return;
+    const day = String(t.date).slice(0, 10);
+    divByDay[day] = (divByDay[day] || 0) + t.qty * t.price * (1 - tax / 100) * fx;
+  });
+  const divDays = Object.keys(divByDay).sort();
+  let p = 0, carry = 0, factor = 1;
+  entries.forEach((h) => {
+    const day = String(h.date).slice(0, 10);
+    while (p < divDays.length && divDays[p] <= day) { carry += divByDay[divDays[p]]; p++; }
+    const base = h.totalSaldo > 0 ? h.totalSaldo : (h.rows || []).reduce((a, r) => a + (r.saldo || 0), 0);
+    if (base > 0) factor *= 1 + (h.total + carry) / base;
+    carry = 0;
+  });
+  return (factor - 1) * 100;
+}
+
+function renderInicio() {
+  const sorted = [...state.history].sort((a, b) => new Date(a.date) - new Date(b.date));
+  const last = sorted[sorted.length - 1] || null;
+  const rowsForTotal = state.posicoes ? state.posicoes.rows : state.portfolio;
+  const totalBrl = rowsForTotal.reduce((a, r) => a + rowEffectiveValue(r), 0);
+  const totalUsd = rowsForTotal.reduce((a, r) => a + rowEffectiveValueUsd(r), 0);
+  const year = String(new Date().getFullYear());
+  const month = todayYMD().slice(0, 7);
+  const yearPct = twrPct(sorted.filter((h) => String(h.date).slice(0, 4) === year));
+  const monthPct = twrPct(sorted.filter((h) => String(h.date).slice(0, 7) === month));
+  const yearBrl = sorted.filter((h) => String(h.date).slice(0, 4) === year).reduce((a, h) => a + h.total, 0);
+  const monthBrl = sorted.filter((h) => String(h.date).slice(0, 7) === month).reduce((a, h) => a + h.total, 0);
+
+  const open = isMarketOpen();
+  const live = open && state.hoje?.status === "result" && state.hoje.result ? state.hoje.result : null;
+  const dayEntry = live || last;
+  const dayLabel = live ? "Hoy, en vivo" : last ? `Último cierre · ${fmtDateWithYear(`${dateToBrazilYMD(last.date)}T12:00:00`)}` : "Sin cierre registrado";
+  const dayPct = dayEntry && totalBrl ? (dayEntry.total / totalBrl) * 100 : 0;
+
+  const fmtSigned = (v) => `${v >= 0 ? "+" : ""}${fmtBRL(v)}`;
+  const pctCls = (v) => (v === null ? "muted" : v >= 0 ? "up" : "down");
+  const stat = (label, big, sub, cls) => `<div class="stat"><span class="stat-label">${label}</span><span class="stat-value ${cls}">${big}</span>${sub ? `<span class="stat-sub ${cls}">${sub}</span>` : ""}</div>`;
+
+  const movers = dayEntry?.rows
+    ? [...dayEntry.rows].sort((a, b) => Math.abs(b.changePct) - Math.abs(a.changePct)).slice(0, 3)
+    : [];
+  const moversHtml = movers.length
+    ? `<div class="movers">${movers.map((r) => `<span class="mover">${avatarHtml(r.ticker, state.posicoes?.logos?.[r.ticker], 18)}<b>${escapeHtml(r.ticker)}</b><span class="${r.changePct >= 0 ? "up" : "down"}">${fmtPct(r.changePct)}</span></span>`).join("")}${dayEntry ? `<span class="mover"><b>USD/BRL</b><span class="${dayEntry.fxPct >= 0 ? "up" : "down"}">${fmtPct(dayEntry.fxPct)}</span></span>` : ""}</div>`
+    : "";
+
+  return `<div class="stack">
+    <div class="card">
+      <span class="small ${open ? "up" : "muted"}">${open ? "● Mercado abierto" : "○ Mercado cerrado"}</span>
+      <div class="stat-grid">
+        ${stat("Saldo total", fmtBRL(totalBrl), totalUsd ? fmtUSD(totalUsd) : "", "")}
+        ${stat(dayLabel, dayEntry ? fmtSigned(dayEntry.total) : "—", dayEntry ? fmtPct(dayPct) : "", dayEntry ? pctCls(dayEntry.total) : "muted")}
+        ${stat("Este mes", monthPct === null ? "—" : fmtPct(monthPct), monthPct === null ? "" : fmtSigned(monthBrl), pctCls(monthPct))}
+        ${stat(`Año ${year}`, yearPct === null ? "—" : fmtPct(yearPct), yearPct === null ? "" : fmtSigned(yearBrl), pctCls(yearPct))}
+      </div>
+      ${moversHtml}
+      <p class="note">El % del mes y del año usa el método TWR (igual que Historial). Los datos del año se completan al cargar el historial de la nube.</p>
+    </div>
+  </div>`;
+}
+
+/* ---------------------------------------------------------------------- */
 /*  Render: HOJE tab                                                       */
 /* ---------------------------------------------------------------------- */
+
+// Mini gráfico (sparkline) del acumulado de los últimos 30 días hábiles de un activo, a partir
+// del % diario guardado en el historial. Solo usa los registros que tienen detalle por activo.
+function tickerSparkline(ticker) {
+  const entries = [...state.history]
+    .filter((h) => Array.isArray(h.rows) && h.rows.some((r) => r.ticker === ticker))
+    .sort((a, b) => new Date(a.date) - new Date(b.date))
+    .slice(-30);
+  if (entries.length < 3) return "";
+  let acc = 1;
+  const vals = entries.map((h) => {
+    const r = h.rows.find((x) => x.ticker === ticker);
+    acc *= 1 + (Number(r?.changePct) || 0) / 100;
+    return (acc - 1) * 100;
+  });
+  const W = 64, H = 20, pad = 2;
+  const min = Math.min(0, ...vals), max = Math.max(0, ...vals);
+  const span = max - min || 1;
+  const x = (i) => pad + (i * (W - 2 * pad)) / (vals.length - 1);
+  const y = (v) => H - pad - ((v - min) / span) * (H - 2 * pad);
+  const d = vals.map((v, i) => `${i ? "L" : "M"} ${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join(" ");
+  const last = vals[vals.length - 1];
+  const cls = last >= 0 ? "chart-line-up" : "chart-line-down";
+  const zero = y(0).toFixed(1);
+  return `<svg class="spark" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" aria-label="Últimos 30 días: ${last.toFixed(1)}%"><title>Últimos ${vals.length} días: ${last >= 0 ? "+" : ""}${last.toFixed(2)}%</title><line x1="${pad}" y1="${zero}" x2="${W - pad}" y2="${zero}" class="chart-grid-line"/><path d="${d}" fill="none" class="${cls}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
+}
 
 function renderHoje() {
   // Con el mercado cerrado (fin de semana, feriado o fuera de horario) se muestra la última
@@ -1550,7 +1661,7 @@ function renderLastSession() {
   const rowsHtml = [...entry.rows]
     .sort((a, b) => (b.saldo || 0) - (a.saldo || 0))
     .map((r) => `<tr>
-        <td><div class="ticker-cell">${avatarHtml(r.ticker, state.posicoes?.logos?.[r.ticker], 20)}<span><b>${escapeHtml(r.ticker)}</b><span class="muted small"> · ${escapeHtml(r.broker || "")}</span></span></div></td>
+        <td><div class="ticker-cell">${avatarHtml(r.ticker, state.posicoes?.logos?.[r.ticker], 20)}<span><b>${escapeHtml(r.ticker)}</b><span class="muted small"> · ${escapeHtml(r.broker || "")}</span></span>${tickerSparkline(r.ticker)}</div></td>
         <td class="num"><span class="${r.changePct >= 0 ? "up" : "down"}">${fmtPct(r.changePct)}</span></td>
         <td class="num ${r.gain >= 0 ? "up" : "down"}">${fmtBRL(r.gain)}</td>
       </tr>`)
@@ -1597,7 +1708,7 @@ function renderHojeReviewResult() {
           : `<span class="${row.changePct >= 0 ? "up" : "down"}">${fmtPct(row.changePct)}</span>`;
       const gainCell = showResultColumns ? `<td class="num ${row.gain >= 0 ? "up" : "down"}">${fmtBRL(row.gain)}</td>` : "";
       return `<tr>
-        <td><div class="ticker-cell">${avatarHtml(p.ticker, state.posicoes?.logos?.[p.ticker], 20)}<span><b>${escapeHtml(p.ticker)}</b><span class="muted small"> · ${escapeHtml(p.broker)}</span>${priceCell ? `<br>${priceCell}` : ""}</span></div></td>
+        <td><div class="ticker-cell">${avatarHtml(p.ticker, state.posicoes?.logos?.[p.ticker], 20)}<span><b>${escapeHtml(p.ticker)}</b><span class="muted small"> · ${escapeHtml(p.broker)}</span>${priceCell ? `<br>${priceCell}` : ""}</span>${tickerSparkline(p.ticker)}</div></td>
         <td class="num">${pctCell}</td>
         ${gainCell}
       </tr>`;
@@ -2483,83 +2594,6 @@ function dividendsByYear() {
   return out;
 }
 
-// Aportes y retiros de dinero a la cartera, en R$. Se guardan como transacciones con
-// ticker "APORTE" y tipo deposit/withdrawal (qty 1, price = monto en R$), así se sincronizan con
-// la nube igual que compras y ventas. El resto de la app ignora estos tipos.
-const CASHFLOW_TICKER = "APORTE";
-function cashflows() {
-  return state.transactions.filter((t) => t.type === "deposit" || t.type === "withdrawal").sort((a, b) => new Date(b.date) - new Date(a.date));
-}
-
-function addCashflowAction() {
-  const f = state.historico.cfForm;
-  const amount = parseNum(f.amount);
-  f.error = null;
-  if (!amount || amount <= 0) { f.error = "Ingresa un monto válido (mayor a 0)."; render(); return; }
-  if (!f.date) { f.error = "Ingresa la fecha."; render(); return; }
-  if (f.date > todayYMD()) { f.error = "La fecha no puede ser futura."; render(); return; }
-  state.transactions.push({ id: uid(), source: "manual", ticker: CASHFLOW_TICKER, broker: "", date: new Date(`${f.date}T12:00:00`).toISOString(), type: f.type, qty: 1, price: amount, fx: null });
-  persistTransactions();
-  f.amount = "";
-  render();
-}
-
-function removeCashflowAction(id) {
-  state.transactions = state.transactions.filter((t) => t.id !== id);
-  persistTransactions();
-  render();
-}
-
-function renderCashflowCard() {
-  const hs = state.historico;
-  const f = hs.cfForm;
-  const flows = cashflows();
-  const deposits = flows.filter((t) => t.type === "deposit").reduce((a, t) => a + t.price, 0);
-  const withdrawals = flows.filter((t) => t.type === "withdrawal").reduce((a, t) => a + t.price, 0);
-  const rowsForTotal = state.posicoes ? state.posicoes.rows : state.portfolio;
-  const currentValue = rowsForTotal.reduce((a, r) => a + rowEffectiveValue(r), 0);
-  const net = deposits - withdrawals;
-  const gain = currentValue + withdrawals - deposits;
-  const gainPct = deposits > 0 ? (gain / deposits) * 100 : 0;
-  const COLLAPSED = 6;
-  const visible = hs.cfExpanded ? flows : flows.slice(0, COLLAPSED);
-  const listHtml = visible.map((t) => `<tr>
-      <td class="small">${fmtDateWithYear(t.date)}</td>
-      <td class="small">${t.type === "deposit" ? "Aporte" : "Retiro"}</td>
-      <td class="num ${t.type === "deposit" ? "up" : "down"}">${t.type === "deposit" ? "+" : "−"}${fmtBRL(t.price)}</td>
-      <td><button class="icon-btn" data-action="remove-cashflow" data-id="${t.id}" title="Eliminar">${icon("trash", 14)}</button></td>
-    </tr>`).join("");
-  const summaryHtml = flows.length
-    ? `<div class="summary">
-        <div class="summary-line"><span>Aportado</span><span>${fmtBRL(deposits)}</span></div>
-        <div class="summary-line"><span>Retirado</span><span>${fmtBRL(withdrawals)}</span></div>
-        <div class="summary-line"><span>Valor actual de la cartera</span><span>${fmtBRL(currentValue)}</span></div>
-        <div class="summary-line summary-total"><span>Ganancia sobre lo aportado</span><span class="${gain >= 0 ? "up" : "down"}">${gain >= 0 ? "+" : ""}${fmtBRL(gain)} (${fmtPct(gainPct)})</span></div>
-      </div>`
-    : "";
-  return `<div class="card">
-    <h2 class="card-title">Aportes y retiros</h2>
-    <p class="note">Registra el dinero que pusiste o sacaste de la cartera, en R$. Con eso se calcula cuánto ganaste en total sobre lo aportado: valor actual + retiros − aportes. Es distinto del rendimiento total (TWR), que mide el desempeño sin importar cuándo aportaste.</p>
-    ${summaryHtml}
-    ${flows.length ? `<div class="table-scroll"><table class="table"><thead><tr><th>Fecha</th><th>Tipo</th><th class="num">Monto</th><th></th></tr></thead><tbody>${listHtml}</tbody></table></div>` : ""}
-    ${flows.length > COLLAPSED ? `<div class="row-actions"><button class="btn btn-ghost btn-sm" data-action="toggle-cashflows-expanded">${icon(hs.cfExpanded ? "chevron-up" : "chevron-down", 13)} ${hs.cfExpanded ? "Mostrar menos" : `Ver los ${flows.length} movimientos`}</button></div>` : ""}
-    <div class="tx-form">
-      ${f.error ? `<div class="banner banner-warn">${icon("alert-triangle", 15)} ${escapeHtml(f.error)}</div>` : ""}
-      <div class="tx-form-row">
-        <select class="input-cell" data-bind="cfType">
-          <option value="deposit" ${f.type === "deposit" ? "selected" : ""}>Aporte</option>
-          <option value="withdrawal" ${f.type === "withdrawal" ? "selected" : ""}>Retiro</option>
-        </select>
-        <input class="input-cell tx-date" type="date" data-bind="cfDate" value="${escapeAttr(f.date)}" style="text-align:left">
-        <input class="input-cell" inputmode="decimal" data-bind="cfAmount" placeholder="Monto R$" value="${escapeAttr(f.amount)}">
-      </div>
-      <div class="row-actions">
-        <button class="btn btn-primary btn-sm" data-action="add-cashflow">${icon("plus", 13)} Registrar</button>
-      </div>
-    </div>
-  </div>`;
-}
-
 function renderTaxSummary() {
   const hs = state.historico;
   const sales = computeRealizedSales();
@@ -2650,7 +2684,7 @@ function renderHistorico() {
 
   const sorted = [...state.history].sort((a, b) => new Date(a.date) - new Date(b.date));
 
-  const allYears = [...new Set([...sorted.map((h) => new Date(h.date).getFullYear()), ...state.transactions.filter((t) => t.ticker !== CASHFLOW_TICKER).map((t) => new Date(t.date).getFullYear())])].sort((a, b) => b - a);
+  const allYears = [...new Set([...sorted.map((h) => new Date(h.date).getFullYear()), ...state.transactions.map((t) => new Date(t.date).getFullYear())])].sort((a, b) => b - a);
   const currentYear = new Date().getFullYear();
   const currentMonthKey = todayYMD().slice(0, 7);
   const pastYears = allYears.filter((y) => y < currentYear);
@@ -2940,7 +2974,6 @@ function renderHistorico() {
       : "";
 
   const taxSummaryHtml = renderTaxSummary();
-  const cashflowHtml = renderCashflowCard();
   const staleHtml = (() => {
     const last = sorted[sorted.length - 1];
     const lastDay = last ? dateToBrazilYMD(last.date) : null;
@@ -2970,7 +3003,6 @@ function renderHistorico() {
         <button class="btn btn-ghost btn-sm" data-action="clear-history">${icon("trash", 13)} ${hs.confirmClear ? "¿Confirmar borrado?" : "Borrar historial"}</button>
       </div>
       ${totalReturnHtml}
-      ${cashflowHtml}
       ${taxSummaryHtml}
       <div class="card">
         <div class="card-title-row">
@@ -3642,7 +3674,8 @@ function importBackupFile(file) {
 
 function switchTab(tab) {
   state.tab = tab;
-  if (tab === "hoje") syncHojeOnTabEnter();
+  if (tab === "inicio") loadFullHistoryFromCloud();
+  else if (tab === "hoje") syncHojeOnTabEnter();
   else if (tab === "posicoes") resetPosicoesState();
   else if (tab === "historico") {
     resetHistoricoState();
@@ -3659,6 +3692,7 @@ let fullHistoryLoaded = false;
 async function loadFullHistoryFromCloud() {
   if (fullHistoryLoaded && state.history.length > 90) return;
   try {
+    if (!state.historico) resetHistoricoState();
     state.historico.importStatus = "loading";
     state.historico.importProgressLabel = "Cargando historial…";
     render();
@@ -3774,6 +3808,7 @@ function render() {
       </header>
 
       <nav class="tabbar">
+        <button class="tab ${state.tab === "inicio" ? "tab-active" : ""}" data-action="switch-tab" data-tab="inicio">${icon("home", 15)} Inicio</button>
         <button class="tab ${state.tab === "hoje" ? "tab-active" : ""}" data-action="switch-tab" data-tab="hoje">${icon("wallet", 15)} Hoy</button>
         <button class="tab ${state.tab === "posicoes" ? "tab-active" : ""}" data-action="switch-tab" data-tab="posicoes">${icon("list-checks", 15)} Posiciones</button>
         <button class="tab ${state.tab === "historico" ? "tab-active" : ""}" data-action="switch-tab" data-tab="historico">${icon("history", 15)} Historial</button>
@@ -3781,7 +3816,7 @@ function render() {
 
       <main class="main">
         ${renderSyncBanner()}
-        ${state.tab === "hoje" ? renderHoje() : state.tab === "posicoes" ? renderPosicoes() : renderHistorico()}
+        ${state.tab === "inicio" ? renderInicio() : state.tab === "hoje" ? renderHoje() : state.tab === "posicoes" ? renderPosicoes() : renderHistorico()}
       </main>
     </div>`;
 
@@ -3851,9 +3886,6 @@ function handleAction(action, el) {
       autoLoadBenchmarks();
       break;
     }
-    case "add-cashflow": addCashflowAction(); break;
-    case "remove-cashflow": removeCashflowAction(id); break;
-    case "toggle-cashflows-expanded": state.historico.cfExpanded = !state.historico.cfExpanded; render(); break;
     case "toggle-tax-detail": state.historico.taxDetailYear = state.historico.taxDetailYear === el.dataset.year ? null : el.dataset.year; render(); break;
     case "cancel-entry-edit": cancelEditEntry(); break;
     case "save-entry-edit": saveEntryEdit(); break;
@@ -3934,10 +3966,6 @@ root.addEventListener("input", (e) => {
     state.historico.importFromDate = el.value;
   } else if (bind === "importToDate") {
     state.historico.importToDate = el.value;
-  } else if (bind === "cfDate") {
-    state.historico.cfForm.date = el.value;
-  } else if (bind === "cfAmount") {
-    state.historico.cfForm.amount = el.value;
   } else if (bind === "apiKey") {  } else if (bind === "apiKey") {
     state.posicoes.apiKey = el.value;
     persistQuotesCache();
@@ -4000,8 +4028,6 @@ root.addEventListener("change", (e) => {
 
   const txRowSel = e.target.closest('[data-bind="txRowId"]');
   if (txRowSel) { state.posicoes.txForm.rowId = txRowSel.value; render(); }
-  const cfTypeSel = e.target.closest('[data-bind="cfType"]');
-  if (cfTypeSel) { state.historico.cfForm.type = cfTypeSel.value; }
   const txTypeSel = e.target.closest('[data-bind="txType"]');
   if (txTypeSel) { state.posicoes.txForm.type = txTypeSel.value; render(); }
 });
@@ -4584,7 +4610,7 @@ startAutoRefresh();
 // (cacheada por el Service Worker) pisara los datos correctos en la nube cada vez que
 // se abría la app en cualquier dispositivo. El push solo ocurre cuando el usuario
 // toca explícitamente "Subir todo a la nube".
-syncPullFromCloud();
+syncPullFromCloud().then(() => loadFullHistoryFromCloud());
 
 // ── Registro del Service Worker ──────────────────────────────────────────────
 if ("serviceWorker" in navigator) {
