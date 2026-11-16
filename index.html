@@ -240,6 +240,17 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
   outline-offset: 2px;
 }
 
+.pos-cards { display: none; }
+.pos-card { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.pos-card-top { display: flex; align-items: center; gap: 8px; }
+.pos-card-top .ticker-cell { flex: 1; }
+.pos-card-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.pos-card-grid label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--text-dim); }
+.pos-card-value { display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
+@media (max-width: 600px) {
+  .pos-table-wrap { display: none; }
+  .pos-cards { display: flex; flex-direction: column; gap: 10px; }
+}
 @media (max-width: 480px) {
   .header-top { flex-direction: column; align-items: flex-start; }
   .header-right { width: 100%; justify-content: space-between; }
@@ -1057,12 +1068,13 @@ async function fetchQuotes() {
 async function backfillHistoricalFx() {
   const ps = state.posicoes;
   const twelveKey = (ps.apiKey || "").trim();
-  const missing = state.transactions.filter((t) => t.type === "buy" && !(typeof t.fx === "number" && t.fx > 0));
+  const needsFx = (t) => t.type === "buy" || t.type === "sell" || t.type === "dividend";
+  const missing = state.transactions.filter((t) => needsFx(t) && !(typeof t.fx === "number" && t.fx > 0));
 
   if (!missing.length) {
     ps.fxBackfillStatus = "idle";
     ps.fxBackfillError = null;
-    ps.fxBackfillMessage = "Todas las compras ya tienen el cambio histórico guardado.";
+    ps.fxBackfillMessage = "Todas las compras, ventas y dividendos ya tienen el cambio histórico guardado.";
     render();
     return;
   }
@@ -1110,7 +1122,7 @@ async function backfillHistoricalFx() {
     let filled = 0;
     const affectedTickers = new Set();
     state.transactions = state.transactions.map((t) => {
-      if (t.type !== "buy" || (typeof t.fx === "number" && t.fx > 0)) return t;
+      if (!needsFx(t) || (typeof t.fx === "number" && t.fx > 0)) return t;
       const ymd = String(t.date).slice(0, 10);
       const rate = nearestRate(ymd);
       if (rate === null) return t;
@@ -1134,7 +1146,7 @@ async function backfillHistoricalFx() {
 
     const pending = missing.length - filled;
     ps.fxBackfillMessage =
-      `Se completó el cambio histórico de ${filled} de ${missing.length} compra(s).` +
+      `Se completó el cambio histórico de ${filled} de ${missing.length} operación(es) (compras, ventas y dividendos).` +
       (pending ? ` ${pending} quedaron sin datos (fuera del rango disponible).` : "");
     ps.fxBackfillError = null;
   } catch (err) {
@@ -1170,6 +1182,8 @@ function resetHistoricoState() {
     confirmClear: false,
     confirmRemoveId: null,
     taxDetailYear: null,
+    cfForm: { type: "deposit", date: todayYMD(), amount: "", error: null },
+    cfExpanded: false,
     importStatus: "idle",
     importProgressLabel: null,
     importMessage: null,
@@ -1887,13 +1901,17 @@ function rowEffectiveValueUsd(r) {
 
 function updateRowValueCell(id) {
   const row = state.posicoes.rows.find((r) => r.id === id);
-  const cell = document.getElementById(`value-cell-${id}`);
-  if (!row || !cell) return;
+  if (!row) return;
   const computed = rowComputedValue(row);
-  cell.innerHTML =
+  const html =
     computed !== null
-      ? `<span class="computed-value" id="value-${id}">${fmtBRL(computed)}</span>`
+      ? `<span class="computed-value">${fmtBRL(computed)}</span>`
       : `<input class="input-cell" inputmode="decimal" data-bind="saldo" data-id="${id}" value="${escapeAttr(row.saldo)}">`;
+  // La tabla (escritorio) y las tarjetas (celular) muestran el mismo valor; se actualizan ambas.
+  const cell = document.getElementById(`value-cell-${id}`);
+  if (cell) cell.innerHTML = html;
+  const mobileCell = document.getElementById(`value-cell-m-${id}`);
+  if (mobileCell) mobileCell.innerHTML = html;
 }
 
 function updateLiveTotal() {
@@ -2174,6 +2192,30 @@ function renderPosicoes() {
     })
     .join("");
 
+  const cardsHtml = rows
+    .map((r, i) => {
+      const computed = rowComputedValue(r);
+      const valueCell =
+        computed !== null
+          ? `<span class="computed-value">${fmtBRL(computed)}</span>`
+          : `<input class="input-cell" inputmode="decimal" data-bind="saldo" data-id="${r.id}" value="${escapeAttr(r.saldo)}" style="max-width:140px">`;
+      return `<div class="pos-card">
+        <div class="pos-card-top">
+          <div class="ticker-cell">${avatarHtml(r.ticker, p.logos?.[r.ticker], 22)}<input class="input-cell" data-bind="ticker" data-id="${r.id}" value="${escapeAttr(r.ticker)}" placeholder="PG" style="text-align:left"></div>
+          <button class="icon-btn" data-action="move-row-up" data-id="${r.id}" title="Subir" ${i === 0 ? "disabled" : ""}>${icon("chevron-up", 14)}</button>
+          <button class="icon-btn" data-action="move-row-down" data-id="${r.id}" title="Bajar" ${i === rows.length - 1 ? "disabled" : ""}>${icon("chevron-down", 14)}</button>
+          <button class="icon-btn" data-action="remove-row" data-id="${r.id}" title="Eliminar">${icon("trash", 14)}</button>
+        </div>
+        <div class="pos-card-grid">
+          <label>Broker<input class="input-cell" data-bind="broker" data-id="${r.id}" value="${escapeAttr(r.broker)}" placeholder="Nomad" style="text-align:left"></label>
+          <label>Cantidad<input class="input-cell" inputmode="decimal" data-bind="quantity" data-id="${r.id}" value="${escapeAttr(r.quantity)}"></label>
+          <label>Precio (US$)<input class="input-cell" inputmode="decimal" data-bind="price" data-id="${r.id}" value="${escapeAttr(r.price)}" placeholder="0,00"></label>
+        </div>
+        <div class="pos-card-value"><span class="muted small">Valor (R$)</span><span id="value-cell-m-${r.id}">${valueCell}</span></div>
+      </div>`;
+    })
+    .join("");
+
   return `
     <div class="stack">
       <div class="card">
@@ -2212,10 +2254,11 @@ function renderPosicoes() {
           <h2 class="card-title">Posiciones de la cartera</h2>
           <span class="muted small" id="live-total">${fmtBRL(liveTotal)}</span>
         </div>
-        <div class="table-scroll"><table class="table table-editable">
+        <div class="table-scroll pos-table-wrap"><table class="table table-editable">
           <thead><tr><th></th><th>Ticker</th><th>Broker</th><th class="num">Cant.</th><th class="num">Precio (US$)</th><th class="num">Valor (R$)</th><th></th></tr></thead>
           <tbody>${rowsHtml}</tbody>
         </table></div>
+        <div class="pos-cards">${cardsHtml}</div>
         <div class="row-actions">
           <button class="btn btn-ghost" data-action="add-row">${icon("plus", 15)} Agregar posición</button>
           <button class="btn btn-primary" data-action="save-positions" ${state.posicoes.dirty ? "" : "disabled"}>${icon("save", 15)} Guardar posiciones</button>
@@ -2440,6 +2483,83 @@ function dividendsByYear() {
   return out;
 }
 
+// Aportes y retiros de dinero a la cartera, en R$. Se guardan como transacciones con
+// ticker "APORTE" y tipo deposit/withdrawal (qty 1, price = monto en R$), así se sincronizan con
+// la nube igual que compras y ventas. El resto de la app ignora estos tipos.
+const CASHFLOW_TICKER = "APORTE";
+function cashflows() {
+  return state.transactions.filter((t) => t.type === "deposit" || t.type === "withdrawal").sort((a, b) => new Date(b.date) - new Date(a.date));
+}
+
+function addCashflowAction() {
+  const f = state.historico.cfForm;
+  const amount = parseNum(f.amount);
+  f.error = null;
+  if (!amount || amount <= 0) { f.error = "Ingresa un monto válido (mayor a 0)."; render(); return; }
+  if (!f.date) { f.error = "Ingresa la fecha."; render(); return; }
+  if (f.date > todayYMD()) { f.error = "La fecha no puede ser futura."; render(); return; }
+  state.transactions.push({ id: uid(), source: "manual", ticker: CASHFLOW_TICKER, broker: "", date: new Date(`${f.date}T12:00:00`).toISOString(), type: f.type, qty: 1, price: amount, fx: null });
+  persistTransactions();
+  f.amount = "";
+  render();
+}
+
+function removeCashflowAction(id) {
+  state.transactions = state.transactions.filter((t) => t.id !== id);
+  persistTransactions();
+  render();
+}
+
+function renderCashflowCard() {
+  const hs = state.historico;
+  const f = hs.cfForm;
+  const flows = cashflows();
+  const deposits = flows.filter((t) => t.type === "deposit").reduce((a, t) => a + t.price, 0);
+  const withdrawals = flows.filter((t) => t.type === "withdrawal").reduce((a, t) => a + t.price, 0);
+  const rowsForTotal = state.posicoes ? state.posicoes.rows : state.portfolio;
+  const currentValue = rowsForTotal.reduce((a, r) => a + rowEffectiveValue(r), 0);
+  const net = deposits - withdrawals;
+  const gain = currentValue + withdrawals - deposits;
+  const gainPct = deposits > 0 ? (gain / deposits) * 100 : 0;
+  const COLLAPSED = 6;
+  const visible = hs.cfExpanded ? flows : flows.slice(0, COLLAPSED);
+  const listHtml = visible.map((t) => `<tr>
+      <td class="small">${fmtDateWithYear(t.date)}</td>
+      <td class="small">${t.type === "deposit" ? "Aporte" : "Retiro"}</td>
+      <td class="num ${t.type === "deposit" ? "up" : "down"}">${t.type === "deposit" ? "+" : "−"}${fmtBRL(t.price)}</td>
+      <td><button class="icon-btn" data-action="remove-cashflow" data-id="${t.id}" title="Eliminar">${icon("trash", 14)}</button></td>
+    </tr>`).join("");
+  const summaryHtml = flows.length
+    ? `<div class="summary">
+        <div class="summary-line"><span>Aportado</span><span>${fmtBRL(deposits)}</span></div>
+        <div class="summary-line"><span>Retirado</span><span>${fmtBRL(withdrawals)}</span></div>
+        <div class="summary-line"><span>Valor actual de la cartera</span><span>${fmtBRL(currentValue)}</span></div>
+        <div class="summary-line summary-total"><span>Ganancia sobre lo aportado</span><span class="${gain >= 0 ? "up" : "down"}">${gain >= 0 ? "+" : ""}${fmtBRL(gain)} (${fmtPct(gainPct)})</span></div>
+      </div>`
+    : "";
+  return `<div class="card">
+    <h2 class="card-title">Aportes y retiros</h2>
+    <p class="note">Registra el dinero que pusiste o sacaste de la cartera, en R$. Con eso se calcula cuánto ganaste en total sobre lo aportado: valor actual + retiros − aportes. Es distinto del rendimiento total (TWR), que mide el desempeño sin importar cuándo aportaste.</p>
+    ${summaryHtml}
+    ${flows.length ? `<div class="table-scroll"><table class="table"><thead><tr><th>Fecha</th><th>Tipo</th><th class="num">Monto</th><th></th></tr></thead><tbody>${listHtml}</tbody></table></div>` : ""}
+    ${flows.length > COLLAPSED ? `<div class="row-actions"><button class="btn btn-ghost btn-sm" data-action="toggle-cashflows-expanded">${icon(hs.cfExpanded ? "chevron-up" : "chevron-down", 13)} ${hs.cfExpanded ? "Mostrar menos" : `Ver los ${flows.length} movimientos`}</button></div>` : ""}
+    <div class="tx-form">
+      ${f.error ? `<div class="banner banner-warn">${icon("alert-triangle", 15)} ${escapeHtml(f.error)}</div>` : ""}
+      <div class="tx-form-row">
+        <select class="input-cell" data-bind="cfType">
+          <option value="deposit" ${f.type === "deposit" ? "selected" : ""}>Aporte</option>
+          <option value="withdrawal" ${f.type === "withdrawal" ? "selected" : ""}>Retiro</option>
+        </select>
+        <input class="input-cell tx-date" type="date" data-bind="cfDate" value="${escapeAttr(f.date)}" style="text-align:left">
+        <input class="input-cell" inputmode="decimal" data-bind="cfAmount" placeholder="Monto R$" value="${escapeAttr(f.amount)}">
+      </div>
+      <div class="row-actions">
+        <button class="btn btn-primary btn-sm" data-action="add-cashflow">${icon("plus", 13)} Registrar</button>
+      </div>
+    </div>
+  </div>`;
+}
+
 function renderTaxSummary() {
   const hs = state.historico;
   const sales = computeRealizedSales();
@@ -2482,7 +2602,7 @@ function renderTaxSummary() {
 
   return `<div class="card">
     <h2 class="card-title">Resumen anual: ventas y dividendos</h2>
-    <p class="note">Ganancia realizada por venta, con el costo promedio de cada corretora (igual que Posiciones), y dividendos netos cobrados. Es solo referencia: no es asesoría tributaria; revísalo con tu contador antes de declarar.</p>
+    <p class="note">Ganancia realizada por venta, con el costo promedio de cada corretora (igual que Posiciones), y dividendos netos cobrados. Es una vista por año de lo que ya está incluido en el rendimiento total; no se suma a él. Es solo referencia, no asesoría tributaria: revísalo con tu contador antes de declarar.</p>
     <div class="table-scroll"><table class="table">
       <thead><tr><th>Año</th><th class="num">Ventas</th><th class="num">Ganancia US$</th><th class="num">Ganancia R$</th><th class="num">Dividendos R$</th><th></th></tr></thead>
       <tbody>${rowsHtml}</tbody>
@@ -2530,7 +2650,7 @@ function renderHistorico() {
 
   const sorted = [...state.history].sort((a, b) => new Date(a.date) - new Date(b.date));
 
-  const allYears = [...new Set([...sorted.map((h) => new Date(h.date).getFullYear()), ...state.transactions.map((t) => new Date(t.date).getFullYear())])].sort((a, b) => b - a);
+  const allYears = [...new Set([...sorted.map((h) => new Date(h.date).getFullYear()), ...state.transactions.filter((t) => t.ticker !== CASHFLOW_TICKER).map((t) => new Date(t.date).getFullYear())])].sort((a, b) => b - a);
   const currentYear = new Date().getFullYear();
   const currentMonthKey = todayYMD().slice(0, 7);
   const pastYears = allYears.filter((y) => y < currentYear);
@@ -2756,7 +2876,7 @@ function renderHistorico() {
     ? `<div class="card total-return-card">
         <h2 class="card-title">Rendimiento total desde ${firstDate}</h2>
         <span class="total-return-value ${cum >= 0 ? "up" : "down"}">${cum >= 0 ? "+" : ""}${fmtBRL(cum)} (${fmtPct(totalReturnPct)})</span>
-        <p class="muted small" style="margin-top:2px">Responde: "¿cómo le fue a mi plata desde que empecé a invertir?". Encadena la variación de cada día (precio + cambio + dividendos cobrados ese día) con el método TWR (retorno ponderado en el tiempo), así no se distorsiona si metiste o sacaste plata en el medio. A diferencia de "Ganancia/pérdida no realizada" (en Posiciones, que solo mira el precio de lo que tienes HOY), acá también se cuenta la ganancia o pérdida de las acciones que ya vendiste en el camino, y los dividendos cobrados.</p>
+        <p class="muted small" style="margin-top:2px">Responde: "¿cómo le fue a mi plata desde que empecé a invertir?". Encadena la variación de cada día (precio + cambio + dividendos cobrados ese día) con el método TWR (retorno ponderado en el tiempo), así no se distorsiona si metiste o sacaste plata en el medio. A diferencia de "Ganancia/pérdida no realizada" (en Posiciones, que solo mira el precio de lo que tienes HOY), acá también se cuenta la ganancia o pérdida de las acciones que ya vendiste en el camino, y los dividendos cobrados. El "Resumen anual" de abajo no se suma a este número: las ventas ya están dentro de la variación diaria; ese resumen solo las separa por año para la declaración.</p>
         ${spxResultHtml}
         ${cdiResultHtml}
       </div>`
@@ -2820,6 +2940,7 @@ function renderHistorico() {
       : "";
 
   const taxSummaryHtml = renderTaxSummary();
+  const cashflowHtml = renderCashflowCard();
   const staleHtml = (() => {
     const last = sorted[sorted.length - 1];
     const lastDay = last ? dateToBrazilYMD(last.date) : null;
@@ -2849,6 +2970,7 @@ function renderHistorico() {
         <button class="btn btn-ghost btn-sm" data-action="clear-history">${icon("trash", 13)} ${hs.confirmClear ? "¿Confirmar borrado?" : "Borrar historial"}</button>
       </div>
       ${totalReturnHtml}
+      ${cashflowHtml}
       ${taxSummaryHtml}
       <div class="card">
         <div class="card-title-row">
@@ -3729,6 +3851,9 @@ function handleAction(action, el) {
       autoLoadBenchmarks();
       break;
     }
+    case "add-cashflow": addCashflowAction(); break;
+    case "remove-cashflow": removeCashflowAction(id); break;
+    case "toggle-cashflows-expanded": state.historico.cfExpanded = !state.historico.cfExpanded; render(); break;
     case "toggle-tax-detail": state.historico.taxDetailYear = state.historico.taxDetailYear === el.dataset.year ? null : el.dataset.year; render(); break;
     case "cancel-entry-edit": cancelEditEntry(); break;
     case "save-entry-edit": saveEntryEdit(); break;
@@ -3809,6 +3934,10 @@ root.addEventListener("input", (e) => {
     state.historico.importFromDate = el.value;
   } else if (bind === "importToDate") {
     state.historico.importToDate = el.value;
+  } else if (bind === "cfDate") {
+    state.historico.cfForm.date = el.value;
+  } else if (bind === "cfAmount") {
+    state.historico.cfForm.amount = el.value;
   } else if (bind === "apiKey") {  } else if (bind === "apiKey") {
     state.posicoes.apiKey = el.value;
     persistQuotesCache();
@@ -3849,6 +3978,7 @@ root.addEventListener("input", (e) => {
     const row = state.posicoes.rows.find((r) => r.id === id);
     if (row) {
       row[bind] = el.value;
+      root.querySelectorAll(`[data-bind="${bind}"][data-id="${id}"]`).forEach((other) => { if (other !== el) other.value = el.value; });
       state.posicoes.dirty = true;
       const saveBtn = document.querySelector('[data-action="save-positions"]');
       if (saveBtn) saveBtn.disabled = false;
@@ -3870,6 +4000,8 @@ root.addEventListener("change", (e) => {
 
   const txRowSel = e.target.closest('[data-bind="txRowId"]');
   if (txRowSel) { state.posicoes.txForm.rowId = txRowSel.value; render(); }
+  const cfTypeSel = e.target.closest('[data-bind="cfType"]');
+  if (cfTypeSel) { state.historico.cfForm.type = cfTypeSel.value; }
   const txTypeSel = e.target.closest('[data-bind="txType"]');
   if (txTypeSel) { state.posicoes.txForm.type = txTypeSel.value; render(); }
 });
