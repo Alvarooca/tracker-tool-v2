@@ -248,10 +248,19 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .movers { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-top: 14px; }
 .mover { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; }
 .spark { vertical-align: middle; margin-left: 6px; flex-shrink: 0; }
-.asset-row { display: grid; grid-template-columns: minmax(90px, 1.2fr) auto minmax(80px, 1fr) 64px 48px; gap: 8px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.asset-row { display: grid; grid-template-columns: minmax(90px, 1.2fr) 84px minmax(100px, 1fr) 110px 56px; gap: 8px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.asset-row .spark { margin-left: 0; justify-self: start; }
+.asset-row > span { white-space: nowrap; }
+.asset-row .num { text-align: right; justify-self: end; }
+.asset-head > span:nth-child(2) { justify-self: start; }
+@media (max-width: 600px) {
+  .asset-row { grid-template-columns: minmax(70px, 1fr) 70px minmax(80px, 1fr) 76px 46px; gap: 6px; }
+  .asset-head > span { white-space: normal; }
+}
 .asset-row:last-child { border-bottom: none; }
 .asset-head { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--border); }
 .asset-head .num { text-align: right; }
+.asset-head > span { white-space: nowrap; }
 .asset-row .chart-svg { margin: 0; }
 .pos-cards { display: none; }
 .pos-card { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
@@ -4133,8 +4142,29 @@ function isMarketOpen() {
   }
 }
 
+// USD/BRL se cotiza fuera del horario de Wall Street, así que se refresca siempre (1 llamada).
+async function refreshFxRateOnly() {
+  const twelveKey = (state.posicoes?.apiKey || "").trim();
+  if (!twelveKey) return;
+  try {
+    const url = `https://api.twelvedata.com/price?symbol=USD/BRL&apikey=${encodeURIComponent(twelveKey)}`;
+    const resp = await fetch(url);
+    const data = await resp.json();
+    const num = parseFloat(data?.price);
+    if (!Number.isFinite(num)) return;
+    state.posicoes.fxRateInput = String(num);
+    persistQuotesCache();
+    const span = document.querySelector(".header-fx-rate");
+    if (span) span.textContent = `US$ 1 = R$ ${num.toFixed(4)}`;
+    else render();
+    updateLiveTotal && updateLiveTotal();
+  } catch (err) {
+    console.warn("[fx] No pude actualizar USD/BRL:", err);
+  }
+}
+
 async function autoRefreshQuotes() {
-  if (!isMarketOpen()) return; // fuera del horario, no hacer nada
+  if (!isMarketOpen()) { await refreshFxRateOnly(); return; } // fuera del horario de acciones, solo el dólar
   const ae = document.activeElement;
   if (ae && ae.matches && ae.matches("input, textarea, select")) return; // no re-renderizar mientras se escribe
   const finnhubKey = (state.posicoes?.finnhubKey || "").trim();
