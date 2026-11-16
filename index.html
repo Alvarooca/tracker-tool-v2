@@ -248,6 +248,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .movers { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-top: 14px; }
 .mover { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; }
 .spark { vertical-align: middle; margin-left: 6px; flex-shrink: 0; }
+.asset-row { display: grid; grid-template-columns: minmax(90px, 1.2fr) auto minmax(80px, 1fr) 64px 48px; gap: 8px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.asset-row:last-child { border-bottom: none; }
+.asset-row .chart-svg { margin: 0; }
 .pos-cards { display: none; }
 .pos-card { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
 .pos-card-top { display: flex; align-items: center; gap: 8px; }
@@ -1538,6 +1541,35 @@ function twrPct(entries) {
   return (factor - 1) * 100;
 }
 
+// Lista de activos con su mini gráfico de 30 días, valor actual y % del último cierre.
+function renderAssetList(title) {
+  const rowsForTotal = state.posicoes ? state.posicoes.rows : state.portfolio;
+  const byTicker = {};
+  rowsForTotal.forEach((r) => { if (r.ticker) byTicker[r.ticker] = (byTicker[r.ticker] || 0) + rowEffectiveValue(r); });
+  const items = Object.entries(byTicker).sort((a, b) => b[1] - a[1]);
+  if (!items.length) return "";
+  const total = items.reduce((a, [, v]) => a + v, 0);
+  const lastEntry = [...state.history].sort((a, b) => new Date(a.date) - new Date(b.date)).slice(-1)[0];
+  const dayRows = lastEntry?.rows || [];
+  const rowsHtml = items
+    .map(([t, v]) => {
+      const dr = dayRows.find((r) => r.ticker === t);
+      return `<div class="asset-row">
+        <div class="ticker-cell">${avatarHtml(t, state.posicoes?.logos?.[t], 20)}<b>${escapeHtml(t)}</b></div>
+        ${tickerSparkline(t)}
+        <span class="num small">${fmtBRL(v)}</span>
+        <span class="num small ${dr ? (dr.changePct >= 0 ? "up" : "down") : "muted"}">${dr ? fmtPct(dr.changePct) : "—"}</span>
+        <span class="num small muted">${total ? ((v / total) * 100).toFixed(1) : "0.0"}%</span>
+      </div>`;
+    })
+    .join("");
+  return `<div class="card">
+    <h2 class="card-title">${title}</h2>
+    <p class="note">Mini gráfico: últimos 30 días. % = variación del último cierre.</p>
+    ${rowsHtml}
+  </div>`;
+}
+
 function renderInicio() {
   const sorted = [...state.history].sort((a, b) => new Date(a.date) - new Date(b.date));
   const last = sorted[sorted.length - 1] || null;
@@ -1580,6 +1612,7 @@ function renderInicio() {
       ${moversHtml}
       <p class="note">El % del mes y del año usa el método TWR (igual que Historial). Los datos del año se completan al cargar el historial de la nube.</p>
     </div>
+    ${renderAssetList("Tus activos")}
   </div>`;
 }
 
@@ -1594,7 +1627,7 @@ function tickerSparkline(ticker) {
     .filter((h) => Array.isArray(h.rows) && h.rows.some((r) => r.ticker === ticker))
     .sort((a, b) => new Date(a.date) - new Date(b.date))
     .slice(-30);
-  if (entries.length < 3) return "";
+  if (entries.length < 3) return `<span class="muted small" style="margin-left:6px">pocos datos</span>`;
   let acc = 1;
   const vals = entries.map((h) => {
     const r = h.rows.find((x) => x.ticker === ticker);
@@ -1610,7 +1643,7 @@ function tickerSparkline(ticker) {
   const last = vals[vals.length - 1];
   const cls = last >= 0 ? "chart-line-up" : "chart-line-down";
   const zero = y(0).toFixed(1);
-  return `<svg class="spark" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" aria-label="Últimos 30 días: ${last.toFixed(1)}%"><title>Últimos ${vals.length} días: ${last >= 0 ? "+" : ""}${last.toFixed(2)}%</title><line x1="${pad}" y1="${zero}" x2="${W - pad}" y2="${zero}" class="chart-grid-line"/><path d="${d}" fill="none" class="${cls}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
+  return `<svg class="chart-svg spark" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" aria-label="Últimos 30 días: ${last.toFixed(1)}%"><title>Últimos ${vals.length} días: ${last >= 0 ? "+" : ""}${last.toFixed(2)}%</title><line x1="${pad}" y1="${zero}" x2="${W - pad}" y2="${zero}" class="chart-grid-line"/><path d="${d}" fill="none" class="${cls}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
 }
 
 function renderHoje() {
@@ -2293,7 +2326,7 @@ function renderPosicoes() {
             <button class="icon-btn move-btn" data-action="move-row-down" data-id="${r.id}" title="Bajar" ${i === rows.length - 1 ? "disabled" : ""}>${icon("chevron-down", 14)}</button>
           </div>
         </td>
-        <td><div class="ticker-cell">${avatarHtml(r.ticker, p.logos?.[r.ticker], 22)}<input class="input-cell" data-bind="ticker" data-id="${r.id}" value="${escapeAttr(r.ticker)}" placeholder="PG"></div></td>
+        <td><div class="ticker-cell">${avatarHtml(r.ticker, p.logos?.[r.ticker], 22)}<input class="input-cell" data-bind="ticker" data-id="${r.id}" value="${escapeAttr(r.ticker)}" placeholder="PG">${tickerSparkline(r.ticker)}</div></td>
         <td><input class="input-cell" data-bind="broker" data-id="${r.id}" value="${escapeAttr(r.broker)}" placeholder="Nomad"></td>
         <td class="num"><input class="input-cell" inputmode="decimal" data-bind="quantity" data-id="${r.id}" value="${escapeAttr(r.quantity)}"></td>
         <td class="num"><input class="input-cell" inputmode="decimal" data-bind="price" data-id="${r.id}" value="${escapeAttr(r.price)}" placeholder="0,00"></td>
@@ -2312,7 +2345,7 @@ function renderPosicoes() {
           : `<input class="input-cell" inputmode="decimal" data-bind="saldo" data-id="${r.id}" value="${escapeAttr(r.saldo)}" style="max-width:140px">`;
       return `<div class="pos-card">
         <div class="pos-card-top">
-          <div class="ticker-cell">${avatarHtml(r.ticker, p.logos?.[r.ticker], 22)}<input class="input-cell" data-bind="ticker" data-id="${r.id}" value="${escapeAttr(r.ticker)}" placeholder="PG" style="text-align:left"></div>
+          <div class="ticker-cell">${avatarHtml(r.ticker, p.logos?.[r.ticker], 22)}<input class="input-cell" data-bind="ticker" data-id="${r.id}" value="${escapeAttr(r.ticker)}" placeholder="PG" style="text-align:left">${tickerSparkline(r.ticker)}</div>
           <button class="icon-btn" data-action="move-row-up" data-id="${r.id}" title="Subir" ${i === 0 ? "disabled" : ""}>${icon("chevron-up", 14)}</button>
           <button class="icon-btn" data-action="move-row-down" data-id="${r.id}" title="Bajar" ${i === rows.length - 1 ? "disabled" : ""}>${icon("chevron-down", 14)}</button>
           <button class="icon-btn" data-action="remove-row" data-id="${r.id}" title="Eliminar">${icon("trash", 14)}</button>
@@ -3004,6 +3037,7 @@ function renderHistorico() {
       </div>
       ${totalReturnHtml}
       ${taxSummaryHtml}
+      ${renderAssetList("Rendimiento por activo")}
       <div class="card">
         <div class="card-title-row">
           <h2 class="card-title">Rendimiento acumulado (%)</h2>
