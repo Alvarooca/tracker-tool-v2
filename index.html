@@ -2658,9 +2658,12 @@ function skeletonCardHtml(title) {
   </div>`;
 }
 
-function renderReturnBreakdown(periodFiltered) {
+function renderReturnBreakdown(periodFiltered, periodFilter) {
+  if (periodFilter === "all") return ""; // en "Todo" no se muestra: incluye años sin detalle por activo
   if (fullHistoryPending) return skeletonCardHtml("Desglose del rendimiento");
   if (!periodFiltered.length) return "";
+  // Solo se muestra si el período tiene detalle por activo (filas guardadas). Sin filas no hay reparto por ticker.
+  if (!periodFiltered.some((e) => Array.isArray(e.rows) && e.rows.length > 0)) return "";
   const tax = parseNum(state.posicoes.dividendTaxPct) || 0;
   const fxFallback = parseNum(state.posicoes.fxRateInput);
   const firstDay = dateToBrazilYMD(periodFiltered[0].date);
@@ -3172,7 +3175,7 @@ function renderHistorico() {
         <button class="btn btn-ghost btn-sm" data-action="clear-history">${icon("trash", 13)} ${hs.confirmClear ? "¿Confirmar borrado?" : "Borrar historial"}</button>
       </div>
       ${totalReturnHtml}
-      ${renderReturnBreakdown(periodFiltered)}
+      ${renderReturnBreakdown(periodFiltered, hs.periodFilter)}
       ${taxSummaryHtml}
       <div class="card">
         <div class="card-title-row">
